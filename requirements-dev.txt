@@ -1,0 +1,6 @@
+-r requirements.txt
+
+# Offline test and lint tooling. The suites never touch Bluetooth hardware.
+pytest>=8
+pytest-asyncio>=0.24
+ruff>=0.6

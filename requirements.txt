@@ -1,0 +1,6 @@
+# Runtime dependencies for the desktop app and CLI.
+# Python 3.12+ (64-bit on Windows; PyQt6 has no 32-bit wheels).
+cryptography>=42
+bleak>=0.22
+bleak-retry-connector>=3
+PyQt6>=6.6

@@ -1,0 +1,4 @@
+# Windows runtime dependencies. Kept as a separate file because
+# setup-windows.ps1 installs from it; the actual pins live in requirements.txt
+# so Linux, Windows and CI cannot drift apart.
+-r requirements.txt

@@ -1,0 +1,37 @@
+# Python runtime and build artefacts
+.venv/
+venv/
+.python/
+.uv-cache/
+.tools/
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Local mesh secrets and exports. Never commit these: state.json contains the
+# NetKey, AppKey and every lamp's device key, and exports are copies of it.
+state.json
+state.json.*
+*.connect
+mesh-backup.json
+*-bulb.json
+bulbctl-*.json
+exports/
+*.tmp
+
+# Runtime logs
+*.log
+provision_run.log
+
+# Editors and operating systems
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp

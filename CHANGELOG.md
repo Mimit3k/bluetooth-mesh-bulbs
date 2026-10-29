@@ -1,0 +1,45 @@
+# Changelog
+
+All notable changes to Mesh Bulbs are documented here. The format follows
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and releases use
+[Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+The vendored `btmesh` library has its own changelog at
+`third_party/btmesh/CHANGELOG.md`.
+
+## [Unreleased]
+
+### Changed
+
+- `setup-windows.ps1` now discovers every registered 64-bit CPython 3.12 or
+  newer and uses the newest one, instead of checking for hard-coded 3.12/3.13
+  versions. Python 3.15+ is accepted automatically. `-PythonVersion` pins a
+  major.minor version and `-Python` forces a specific interpreter.
+- When an existing `.venv` is found, Windows setup now offers to remove and
+  recreate it, so a one-off setup run cannot silently keep stale packages or a
+  mismatched Python version.
+- Python discovery also checks uv-managed installations, and the no-Python
+  error suggests installing Python through uv as well as from python.org.
+- The Windows and Linux setup documentation now covers automatic version
+  discovery, portable `uv`-managed Python under `.python/`, and why CPython is
+  not bundled in the repository.
+- Documentation and user-facing messages now say "computer" for the host
+  running the app, avoiding confusion with mesh devices (the bulbs).
+
+## [0.1.0] — 2026-10-26
+
+Initial public source release.
+
+### Added
+
+- PyQt6 desktop app and scriptable CLI for LEDVANCE SMART+ Bluetooth SIG-mesh
+  lamps, using only the computer's built-in Bluetooth.
+- Provisioning of factory-reset lamps, persistent mesh keys, and multiple bulbs.
+- Power, brightness, colour temperature and colour control with ten presets.
+- Versioned JSON export/import of a whole mesh or a single bulb, with merge,
+  replace, validation and rollback.
+- Per-computer controller unicast addresses so two PCs can share the same mesh
+  one at a time without re-provisioning.
+- Windows 10/11 setup script and launchers alongside the Linux setup script.
+- Offline regression suites for configuration, controller identity and the
+  temperature slider.

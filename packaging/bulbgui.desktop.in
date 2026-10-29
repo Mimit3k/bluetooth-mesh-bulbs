@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Mesh Bulbs
+GenericName=Bluetooth mesh lamp control
+Comment=Switch, dim and colour Bluetooth SIG-mesh lamps
+Exec=@ROOT@/bulbgui
+Path=@ROOT@
+Icon=@ROOT@/icon.svg
+Terminal=false
+Categories=Utility;
+Keywords=bluetooth;mesh;light;bulb;lamp;
+StartupWMClass=bulbgui.py
