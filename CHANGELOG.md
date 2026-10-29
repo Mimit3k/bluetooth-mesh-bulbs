@@ -9,6 +9,12 @@ The vendored `btmesh` library has its own changelog at
 
 ## [Unreleased]
 
+### Fixed
+
+- The configuration suite no longer checks POSIX `0600` mode bits on Windows,
+  where `os.stat` reports `0o666` for any writable file regardless of its NTFS
+  ACLs. This was the Windows CI failure; the check still runs on Linux.
+
 ### Changed
 
 - `setup-windows.ps1` now discovers every registered 64-bit CPython 3.12 or

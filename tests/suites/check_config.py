@@ -4,6 +4,7 @@
 
 import copy
 import json
+import os
 import shutil
 import stat
 import subprocess
@@ -55,9 +56,12 @@ master = make_master(root)
 mesh_file = root / "mesh.json"
 summary = meshcore.export_config(master, mesh_file, kind="mesh")
 assert "whole mesh" in summary
-assert stat.S_IMODE(mesh_file.stat().st_mode) == 0o600, oct(
-    stat.S_IMODE(mesh_file.stat().st_mode)
-)
+# POSIX mode bits are meaningless on Windows: os.stat reports 0o666 for any
+# writable file, and meshcore relies on the user profile's NTFS ACLs instead.
+if os.name != "nt":
+    assert stat.S_IMODE(mesh_file.stat().st_mode) == 0o600, oct(
+        stat.S_IMODE(mesh_file.stat().st_mode)
+    )
 raw = json.loads(mesh_file.read_text())
 assert raw["format"] == "bulbctl-config"
 assert raw["version"] == 1
