@@ -393,8 +393,11 @@ expected. To return a lamp to the vendor app, factory-reset it.
 - **Add bulb** fails after provisioning with a timeout → the lamp is already on
   the mesh; do not factory-reset it. Run
   `./bulbctl configure --device NAME` to retry the AppKey install and model
-  binding. Each failed bind reconnects automatically, and the add flow retries
-  the whole pass up to three times.
+  binding. Each failed bind reconnects automatically, and the add flow waits
+  10 s for the reboot, then retries the whole pass up to five times.
+- `device 'dev_…' not found` / `The device disappeared` → BlueZ dropped the
+  scanned object before the connect. The app scans for the address again and
+  retries; if it still fails, keep the lamp powered and close, then scan again.
 - `another Mesh Bulbs or bulbctl process is already using …` → only one process
   may use the mesh keys at a time. Close the GUI before running the CLI (or the
   reverse). This lock is per machine; see the Windows notes about running only

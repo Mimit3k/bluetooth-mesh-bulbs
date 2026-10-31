@@ -1027,14 +1027,25 @@ async def configure_node(state: State, node: MeshNode, unicast: int,
 
 
 async def configure_with_retries(
-    state: State, unicast: int, *, log_fn=log.info, attempts: int = 3
+    state: State,
+    unicast: int,
+    *,
+    log_fn=log.info,
+    attempts: int = 3,
+    initial_delay: float = 0.0,
+    backoff: float = 3.0,
 ) -> tuple[list[int], object]:
     """Run :func:`configure_node` until every required model is bound.
 
     A freshly provisioned lamp may still be rebooting, so the whole
     configuration (find proxy, AppKey, composition, binds) is repeated on a
-    fresh link before giving up.
+    fresh link before giving up.  ``initial_delay`` covers the reboot that
+    starts as soon as provisioning finishes; ``backoff`` is multiplied by the
+    attempt number for later retries.
     """
+    if initial_delay:
+        log_fn(f"waiting {initial_delay:.0f} s for the lamp to reboot…")
+        await asyncio.sleep(initial_delay)
     last: Exception | None = None
     for attempt in range(1, attempts + 1):
         try:
@@ -1046,7 +1057,7 @@ async def configure_with_retries(
             last = exc
             log_fn(f"configuration attempt {attempt}/{attempts} failed: {exc}")
             if attempt < attempts:
-                await asyncio.sleep(3.0 * attempt)
+                await asyncio.sleep(backoff * attempt)
     raise MeshCoreError(f"configuration failed after {attempts} attempts: {last}")
 
 
@@ -1065,12 +1076,18 @@ async def provision(state: State, uuid: str | None = None, name: str = "Bulb",
     entry["bound_models"] = []
     state.save()
 
-    # A freshly provisioned node often reboots before it answers configuration
-    # messages, so the whole pass is retried on a fresh link. Retrying is
-    # safe: AppKey Add accepts a key that is already installed, and every model
-    # bind is idempotent.
+    # A freshly provisioned node reboots as soon as the handshake finishes and
+    # often needs 20-30 s before its config server answers.  Wait for the
+    # reboot, then retry the whole pass on a fresh link for up to ~1 minute.
     try:
-        bound, _comp = await configure_with_retries(state, unicast, log_fn=log_fn)
+        bound, _comp = await configure_with_retries(
+            state,
+            unicast,
+            log_fn=log_fn,
+            attempts=5,
+            initial_delay=10.0,
+            backoff=5.0,
+        )
     except MeshCoreError as exc:
         raise MeshCoreError(
             f"bulb provisioned at 0x{unicast:04x}, but configuration failed: "

@@ -79,8 +79,13 @@ with tempfile.TemporaryDirectory(prefix="bulbctl-retry-ok-") as tmp:
 
 
 # When every attempt fails the bulb stays in the collection (its device key is
-# real), and the error says how to retry without a factory reset.
+# real), and the error says how to retry without a factory reset.  A fresh
+# provision gets five attempts, including the initial reboot delay.
+fail_calls: list[int] = []
+
+
 async def always_fail(state, node, unicast, log_fn=print, **kwargs):
+    fail_calls.append(unicast)
     raise TimeoutError("no composition response")
 
 
@@ -98,7 +103,8 @@ with tempfile.TemporaryDirectory(prefix="bulbctl-retry-fail-") as tmp:
             assert "already on the mesh" in text, text
             assert "bulbctl configure --device 0x0002" in text, text
         else:
-            raise AssertionError("expected MeshCoreError after three failures")
+            raise AssertionError("expected MeshCoreError after five failures")
+        assert fail_calls == [0x0002] * 5, fail_calls
         assert state.device(0x0002)["bound_models"] == []
     finally:
         state.release()

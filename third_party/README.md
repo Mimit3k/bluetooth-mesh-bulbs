@@ -23,6 +23,17 @@ PyPI carries an older `btmesh` release (0.1.0 at the time of writing) than the
 `meshcore.py` adds `src/` and `phase0/` to `sys.path` instead of installing the
 library.
 
+## Local patches
+
+These are application fixes on top of the vendored tree; re-apply them (or
+carry them upstream) when re-syncing:
+
+- `src/btmesh/bearer.py::connect_local` re-scans for the device address when
+  BlueZ drops the cached `BLEDevice` object ("device not found" / "The device
+  disappeared"). Without it, a lamp that is still advertising looks
+  permanently unreachable because the provisioning scan stops just before
+  connecting.
+
 ## Re-syncing
 
 To update the vendored stack, copy `src/btmesh/` and the Phase 0 harness from a

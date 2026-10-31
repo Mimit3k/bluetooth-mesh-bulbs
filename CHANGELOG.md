@@ -19,14 +19,20 @@ The vendored `btmesh` library has its own changelog at
 - **Forget** now removes the bulb from the collection immediately. It no
   longer waits for a stale BLE link to close first, which could leave the entry
   visible for a minute after the UI had already reported success.
-- Adding a bulb no longer fails with a configuration timeout when the lamp is
-  still rebooting after provisioning, and no longer saves a half-configured
-  bulb. Each model bind that times out reconnects to the proxy and retries, and
-  the whole pass is repeated up to three times. A failed element-0 model now
-  aborts the add instead of being silently skipped, which previously left only
-  on/off working. Secondary-element models are skipped because the app always
-  addresses the bulb's primary element. A final failure explains that the lamp
-  is already on the mesh and how to retry it without a factory reset.
+- Adding a bulb now waits 10 seconds after provisioning for the lamp's reboot
+  and retries configuration five times with increasing backoff. The config
+  server is often not ready for the first 20-30 seconds after a lamp joins,
+  which previously made the wizard give up with a timeout even though
+  provisioning had succeeded. Each model bind that times out also reconnects
+  to the proxy and retries, and a failed element-0 model aborts the add
+  instead of being silently skipped. Secondary-element models are skipped
+  because the app always addresses the bulb's primary element. A final failure
+  explains that the lamp is already on the mesh and how to retry it without a
+  factory reset.
+- Provisioning recovers when BlueZ drops the scanned device object before the
+  connect (`device 'dev_…' not found: The device disappeared`). The app scans
+  for the address again and retries with the fresh object instead of reporting
+  the lamp as unreachable.
 - The configuration suite no longer checks POSIX `0600` mode bits on Windows,
   where `os.stat` reports `0o666` for any writable file regardless of its NTFS
   ACLs. This was the Windows CI failure; the check still runs on Linux.

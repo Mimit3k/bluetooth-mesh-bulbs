@@ -455,20 +455,48 @@ async def connect_local(
     A ``BLEDevice`` (from scanning) goes through bleak-retry-connector's
     ``establish_connection`` — mesh nodes routinely drop the first attempt.
     A bare address string falls back to a single direct attempt.
+
+    BlueZ drops discovered devices from its object tree a short while after
+    scanning stops.  If the connect fails because the cached object vanished,
+    scan for the address again and retry once with the fresh object; without
+    this a lamp that is still advertising looks permanently unreachable.
     """
-    from bleak import BleakClient
+    from bleak import BleakClient, BleakScanner
 
     if not isinstance(address_or_device, str):
         from bleak_retry_connector import establish_connection
 
-        try:
-            return await establish_connection(
-                BleakClient, address_or_device, address_or_device.address
-            )
-        except Exception as exc:
-            raise BearerError(
-                f"local BLE connect to {address_or_device} failed: {exc}"
-            ) from exc
+        device = address_or_device
+        address = device.address
+        last: Exception | None = None
+        for attempt in range(1, 3):
+            try:
+                return await establish_connection(BleakClient, device, address)
+            except Exception as exc:
+                last = exc
+                message = str(exc).lower()
+                if attempt == 2 or not any(
+                    marker in message for marker in ("not found", "disappeared")
+                ):
+                    raise BearerError(
+                        f"local BLE connect to {address} failed: {exc}"
+                    ) from exc
+                logger.info(
+                    "BlueZ dropped %s; rescanning before retrying the connect",
+                    address,
+                )
+                fresh = await BleakScanner.find_device_by_address(
+                    address, timeout=10.0
+                )
+                if fresh is None:
+                    raise BearerError(
+                        f"local BLE connect to {address} failed: {exc} "
+                        "(the device disappeared and did not return within 10 s)"
+                    ) from exc
+                device = fresh
+        raise BearerError(  # pragma: no cover - the loop always returns/raises
+            f"local BLE connect to {address} failed: {last}"
+        )
 
     client = BleakClient(address_or_device, timeout=timeout)
     try:
