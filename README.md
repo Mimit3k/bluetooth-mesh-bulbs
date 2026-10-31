@@ -296,7 +296,9 @@ Measured from its composition data and Lightness/CTL/HSL status messages:
   `00ff00` green, `0000ff` blue (hue 0/120/240, saturation 100).
 - Models: OnOff `0x1000`, Lightness `0x1300`, CTL `0x1303`, HSL `0x1307`
   (element 0), CTL Temperature `0x1306` (element 1), HSL Hue/Saturation
-  `0x130A`/`0x130B` (elements 2/3).
+  `0x130A`/`0x130B` (elements 2/3). The app binds only the element-0 models and
+  drives temperature and colour through them; this firmware does not answer
+  AppKey binding for the secondary elements, and they are not needed.
 - It ignores Generic Level SET, so brightness is driven through Lightness SET.
 
 ## State and backup
@@ -391,7 +393,8 @@ expected. To return a lamp to the vendor app, factory-reset it.
 - **Add bulb** fails after provisioning with a timeout → the lamp is already on
   the mesh; do not factory-reset it. Run
   `./bulbctl configure --device NAME` to retry the AppKey install and model
-  binding. The add flow retries this automatically up to three times.
+  binding. Each failed bind reconnects automatically, and the add flow retries
+  the whole pass up to three times.
 - `another Mesh Bulbs or bulbctl process is already using …` → only one process
   may use the mesh keys at a time. Close the GUI before running the CLI (or the
   reverse). This lock is per machine; see the Windows notes about running only

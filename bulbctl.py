@@ -74,12 +74,13 @@ async def cmd_provision(args) -> int:
 async def cmd_configure(args) -> int:
     state = State(args.state)
     unicast = state.resolve(args.device)
-    async with Link(state, unicast, log_fn=print) as link:
-        bound, comp = await meshcore.configure_node(state, link.node, unicast, log_fn=print)
-        state.device(unicast)["bound_models"] = bound
-        state.save()
-        print(f"\n{comp.describe()}")
-        print("models bound: " + (", ".join(f"0x{m:04x}" for m in bound) or "none"))
+    bound, comp = await meshcore.configure_with_retries(
+        state, unicast, log_fn=print
+    )
+    state.device(unicast)["bound_models"] = bound
+    state.save()
+    print(f"\n{comp.describe()}")
+    print("models bound: " + (", ".join(f"0x{m:04x}" for m in bound) or "none"))
     return 0
 
 

@@ -913,8 +913,16 @@ async def scan(state: State, timeout: float = 10.0) -> dict:
 
 
 async def configure_node(state: State, node: MeshNode, unicast: int,
-                         log_fn=log.info) -> tuple[list[int], object]:
-    """Install AppKey, read composition, bind every controllable model."""
+                         log_fn=log.info, *, link=None,
+                         bind_attempts: int = 2) -> tuple[list[int], object]:
+    """Install AppKey, read composition and bind every controllable model.
+
+    Binds are retried on a fresh GATT session: right after provisioning the
+    lamp often drops the proxy link part-way through, and a reconnect lets the
+    remaining models bind instead of being skipped.  Only element-0 models are
+    bound, because every command the app sends targets the bulb's primary
+    element; this firmware's secondary elements never answer AppKey binding.
+    """
     resp = await node.request(
         unicast,
         config_appkey_add(state.data["netkey_index"], state.data["appkey_index"], state.appkey),
@@ -940,31 +948,106 @@ async def configure_node(state: State, node: MeshNode, unicast: int,
     # The node has ONE device key; config messages are addressed per element.
     entry = state.device(unicast)
     key = bytes.fromhex(entry["device_key"])
-    for index in range(len(comp.elements)):
-        node.add_device(unicast + index, key)
 
+    def add_elements(target) -> None:
+        for index in range(len(comp.elements)):
+            target.add_device(unicast + index, key)
+
+    add_elements(node)
+
+    failed: list[tuple[int, str]] = []
     bound: list[int] = []
     for index, element in enumerate(comp.elements):
+        if index > 0:
+            # Link always addresses the bulb's primary element.  The secondary
+            # elements on this firmware (0x1306/0x130a/0x130b) do not answer
+            # AppKey binding and are never used by the app, so probing them
+            # only adds two timeouts per model to every add and configure.
+            log_fn(
+                f"element {index} models are not addressed by this app "
+                "(secondary elements skipped)"
+            )
+            continue
         for model_id in element.sig_models:
             if model_id not in CONTROLLABLE_MODELS:
                 continue
-            try:
-                r = await node.request(
-                    unicast + index,
-                    config_model_app_bind(unicast + index, state.data["appkey_index"], model_id),
-                    OP_CONFIG_MODEL_APP_STATUS,
-                    dev_key=True,
-                    timeout=10,
+            last: Exception | None = None
+            ok = False
+            for attempt in range(1, bind_attempts + 1):
+                try:
+                    r = await node.request(
+                        unicast + index,
+                        config_model_app_bind(
+                            unicast + index, state.data["appkey_index"], model_id
+                        ),
+                        OP_CONFIG_MODEL_APP_STATUS,
+                        dev_key=True,
+                        timeout=8,
+                    )
+                    status = parse_config_model_app_status(_full(r))
+                    if status.status != 0x00:
+                        raise MeshCoreError(f"status 0x{status.status:02x}")
+                    ok = True
+                    break
+                except (TimeoutError, MeshCoreError) as exc:
+                    last = exc
+                    if attempt == bind_attempts:
+                        break
+                    log_fn(
+                        f"0x{model_id:04x} {CONTROLLABLE_MODELS[model_id]}: "
+                        f"{exc} (reconnecting)"
+                    )
+                    if link is None:
+                        await asyncio.sleep(1.0)
+                        continue
+                    try:
+                        await link.reconnect()
+                    except Exception as reconnect_exc:  # noqa: BLE001
+                        log_fn(f"reconnect failed: {reconnect_exc}")
+                        continue
+                    node = link.node
+                    add_elements(node)
+            if not ok:
+                failed.append((model_id, str(last)))
+                log_fn(
+                    f"0x{model_id:04x} {CONTROLLABLE_MODELS[model_id]}: "
+                    f"{last} (failed)"
                 )
-                status = parse_config_model_app_status(_full(r))
-                if status.status != 0x00:
-                    raise MeshCoreError(f"status 0x{status.status:02x}")
-            except (TimeoutError, MeshCoreError) as exc:
-                log_fn(f"0x{model_id:04x} {CONTROLLABLE_MODELS[model_id]}: {exc} (skipped)")
                 continue
             bound.append(model_id)
             log_fn(f"0x{model_id:04x} {CONTROLLABLE_MODELS[model_id]}: bound")
+
+    if failed:
+        names = ", ".join(
+            f"0x{model_id:04x} {CONTROLLABLE_MODELS[model_id]}"
+            for model_id, _ in failed
+        )
+        raise MeshCoreError(f"could not bind required model(s): {names}")
     return bound, comp
+
+
+async def configure_with_retries(
+    state: State, unicast: int, *, log_fn=log.info, attempts: int = 3
+) -> tuple[list[int], object]:
+    """Run :func:`configure_node` until every required model is bound.
+
+    A freshly provisioned lamp may still be rebooting, so the whole
+    configuration (find proxy, AppKey, composition, binds) is repeated on a
+    fresh link before giving up.
+    """
+    last: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            async with Link(state, unicast, log_fn=log_fn) as link:
+                return await configure_node(
+                    state, link.node, unicast, log_fn=log_fn, link=link
+                )
+        except (TimeoutError, MeshCoreError) as exc:
+            last = exc
+            log_fn(f"configuration attempt {attempt}/{attempts} failed: {exc}")
+            if attempt < attempts:
+                await asyncio.sleep(3.0 * attempt)
+    raise MeshCoreError(f"configuration failed after {attempts} attempts: {last}")
 
 
 async def provision(state: State, uuid: str | None = None, name: str = "Bulb",
@@ -983,32 +1066,22 @@ async def provision(state: State, uuid: str | None = None, name: str = "Bulb",
     state.save()
 
     # A freshly provisioned node often reboots before it answers configuration
-    # messages, so the first Composition Data Get can time out. Retrying is
+    # messages, so the whole pass is retried on a fresh link. Retrying is
     # safe: AppKey Add accepts a key that is already installed, and every model
     # bind is idempotent.
-    last: Exception | None = None
-    for attempt in range(1, 4):
-        try:
-            async with Link(state, unicast, log_fn=log_fn) as link:
-                bound, _comp = await configure_node(
-                    state, link.node, unicast, log_fn=log_fn
-                )
-        except (TimeoutError, MeshCoreError) as exc:
-            last = exc
-            log_fn(f"configuration attempt {attempt}/3 failed: {exc}")
-            if attempt < 3:
-                await asyncio.sleep(3.0 * attempt)
-            continue
-        entry["bound_models"] = bound
-        state.save()
-        log_fn(f"added {name!r} at 0x{unicast:04x}, {len(bound)} models bound")
-        return unicast
+    try:
+        bound, _comp = await configure_with_retries(state, unicast, log_fn=log_fn)
+    except MeshCoreError as exc:
+        raise MeshCoreError(
+            f"bulb provisioned at 0x{unicast:04x}, but configuration failed: "
+            f"{exc}. It is already on the mesh; retry with: "
+            f"bulbctl configure --device 0x{unicast:04x}"
+        ) from exc
 
-    raise MeshCoreError(
-        f"bulb provisioned at 0x{unicast:04x}, but configuration failed: {last}. "
-        f"It is already on the mesh; retry with: "
-        f"bulbctl configure --device 0x{unicast:04x}"
-    )
+    entry["bound_models"] = bound
+    state.save()
+    log_fn(f"added {name!r} at 0x{unicast:04x}, {len(bound)} models bound")
+    return unicast
 
 
 # ---------------------------------------------------------------------- link
@@ -1100,6 +1173,16 @@ class Link:
             except Exception:
                 pass
         self.node = self.bearer = self.pump = self.client = None
+
+    async def reconnect(self) -> None:
+        """Drop the GATT session and find the proxy again.
+
+        Mesh lamps regularly drop the proxy link right after provisioning or
+        after a period of silence; a fresh connect is the only reliable way to
+        keep talking to them.
+        """
+        await self.close()
+        await self.connect()
 
     async def request(self, payload: bytes, opcode: int, *, timeout: float = 6.0,
                       dev_key: bool = False):

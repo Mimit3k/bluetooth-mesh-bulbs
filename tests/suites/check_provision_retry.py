@@ -57,7 +57,7 @@ meshcore.asyncio.sleep = fake_sleep
 calls: list[int] = []
 
 
-async def flaky_configure(state, node, unicast, log_fn=print):
+async def flaky_configure(state, node, unicast, log_fn=print, **kwargs):
     calls.append(unicast)
     if len(calls) < 3:
         raise TimeoutError("no composition response")
@@ -80,7 +80,7 @@ with tempfile.TemporaryDirectory(prefix="bulbctl-retry-ok-") as tmp:
 
 # When every attempt fails the bulb stays in the collection (its device key is
 # real), and the error says how to retry without a factory reset.
-async def always_fail(state, node, unicast, log_fn=print):
+async def always_fail(state, node, unicast, log_fn=print, **kwargs):
     raise TimeoutError("no composition response")
 
 
