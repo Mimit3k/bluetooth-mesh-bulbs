@@ -29,6 +29,11 @@ The vendored `btmesh` library has its own changelog at
   because the app always addresses the bulb's primary element. A final failure
   explains that the lamp is already on the mesh and how to retry it without a
   factory reset.
+- The **Add bulb** wizard no longer aborts when an unrelated background
+  operation fails. A status request for a different, unreachable bulb used to
+  emit the shared `failed` signal, which the wizard treated as its own failure
+  and closed with a misleading “Could not add the bulb” dialog. Add errors now
+  use a dedicated `add_failed` signal.
 - Provisioning recovers when BlueZ drops the scanned device object before the
   connect (`device 'dev_…' not found: The device disappeared`). The app scans
   for the address again and retries with the fresh object instead of reporting

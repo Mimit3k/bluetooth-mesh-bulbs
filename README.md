@@ -395,6 +395,15 @@ expected. To return a lamp to the vendor app, factory-reset it.
   `./bulbctl configure --device NAME` to retry the AppKey install and model
   binding. Each failed bind reconnects automatically, and the add flow waits
   10 s for the reboot, then retries the whole pass up to five times.
+- **Add bulb** seems stuck for a minute or two → expected. A lamp can take
+  around 2.5 minutes after provisioning before it answers configuration; let
+  the five attempts finish before touching the bulb.
+- Another program or the operating system holding a BLE connection can block
+  provisioning. `bluetoothctl info <address>` showing `Connected: yes` means
+  something is connected — run `bluetoothctl disconnect <address>`. If it shows
+  `Trusted: yes`, run `bluetoothctl untrust <address>`; `Paired: no` /
+  `Trusted: no` means BlueZ will not reconnect on its own just because it
+  remembers the device.
 - `device 'dev_…' not found` / `The device disappeared` → BlueZ dropped the
   scanned object before the connect. The app scans for the address again and
   retries; if it still fails, keep the lamp powered and close, then scan again.

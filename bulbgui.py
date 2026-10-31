@@ -240,6 +240,7 @@ class MeshWorker(QObject):
     status_ready = pyqtSignal(int, dict)
     scan_ready = pyqtSignal(list)
     added = pyqtSignal(int, str)
+    add_failed = pyqtSignal(str)
     log_line = pyqtSignal(str)
     failed = pyqtSignal(str)
     config_exported = pyqtSignal(str, str)
@@ -412,12 +413,21 @@ class MeshWorker(QObject):
         self.submit(self._add_bulb(uuid, name))
 
     async def _add_bulb(self, uuid: str, name: str) -> None:
-        async with self._op_lock:
-            await self._close_all()
-            self.log_line.emit(f"provisioning {name!r} — this can take a minute…")
-            unicast = await meshcore.provision(
-                self.state, uuid=uuid, name=name, log_fn=self.log_line.emit
+        try:
+            async with self._op_lock:
+                await self._close_all()
+                self.log_line.emit(
+                    f"provisioning {name!r} — this can take a few minutes…"
+                )
+                unicast = await meshcore.provision(
+                    self.state, uuid=uuid, name=name, log_fn=self.log_line.emit
+                )
+        except Exception as exc:  # noqa: BLE001 - report to the add dialog
+            detail = (
+                f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__
             )
+            self.add_failed.emit(detail)
+            return
         self.log_line.emit(f"added {name!r} at 0x{unicast:04x}")
         self.added.emit(unicast, name)
         self.devices_changed.emit(self.state.snapshot())
@@ -571,7 +581,7 @@ class AddBulbDialog(QDialog):
 
         worker.scan_ready.connect(self.on_scan)
         worker.added.connect(self.on_added)
-        worker.failed.connect(self.on_failed)
+        worker.add_failed.connect(self.on_add_failed)
         worker.log_line.connect(self.append_log)
         self.finished.connect(self._cleanup)
 
@@ -638,14 +648,16 @@ class AddBulbDialog(QDialog):
         self._set_busy(False)
         self.accept()
 
-    def on_failed(self, message: str) -> None:
+    def on_add_failed(self, message: str) -> None:
         if not self._busy:
             return
         self._set_busy(False, f"Failed: {message}")
         QMessageBox.critical(
             self, "Could not add the bulb",
             f"{message}\n\nIf the bulb is still unprovisioned, factory-reset "
-            "it and try again.",
+            "it and try again. If it is already on the mesh, do not reset it; "
+            "retry the add, or use the configure command when the message "
+            "includes one.",
         )
 
     def append_log(self, line: str) -> None:
@@ -655,7 +667,7 @@ class AddBulbDialog(QDialog):
         for signal, slot in (
             (self.worker.scan_ready, self.on_scan),
             (self.worker.added, self.on_added),
-            (self.worker.failed, self.on_failed),
+            (self.worker.add_failed, self.on_add_failed),
             (self.worker.log_line, self.append_log),
         ):
             try:

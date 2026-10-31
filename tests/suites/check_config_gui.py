@@ -109,6 +109,18 @@ async def removal_is_immediate():
 
 asyncio.run(removal_is_immediate())
 
+
+# --- a stray worker failure must not abort the add wizard --------------
+bulbgui.QMessageBox.critical = staticmethod(lambda *a, **k: None)
+dialog = bulbgui.AddBulbDialog(worker, 2)
+dialog._set_busy(True, "Adding…")
+worker.failed.emit("status poll failed")
+assert dialog._busy, "an unrelated failure must not stop the add dialog"
+worker.add_failed.emit("provisioning failed")
+assert not dialog._busy, "an add failure must stop the dialog"
+assert dialog.status.text().startswith("Failed:"), dialog.status.text()
+dialog.close()
+
 window.poll_timer.stop()
 window.temp_timer.stop()
 worker.shutdown()
