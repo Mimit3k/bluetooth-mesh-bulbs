@@ -150,9 +150,19 @@ class State:
     the other's changes, so construction takes a non-blocking advisory lock.
     """
 
+    # If the previous process did not shut down cleanly, the cursor it saved can
+    # be behind the highest SEQ the nodes have already accepted from us. Every
+    # later message would then be discarded as a replay, which looks exactly
+    # like a dead lamp. A run marker detects that case and jumps the cursor
+    # forward, the same way changing the controller address does.
+    CRASH_SEQ_MARGIN = 10_000
+
     def __init__(self, path: Path | str = DEFAULT_STATE, *, lock: bool = True) -> None:
         self.path = Path(path)
         self._lock_fd: int | None = None
+        self._marker: Path | None = None
+        if lock:
+            self._marker = self.path.with_suffix(self.path.suffix + ".running")
         self.path.parent.mkdir(parents=True, exist_ok=True)
         _protect(self.path.parent, 0o700)
         if lock:
@@ -175,6 +185,22 @@ class State:
             self.data = json.loads(self.path.read_text(encoding="utf-8"))
             self._migrate()
             _protect(self.path, 0o600)
+            if self._marker is not None and self._marker.exists():
+                old = int(self.data.get("seq", 0))
+                self.data["seq"] = min(0xFFFFFF, old + self.CRASH_SEQ_MARGIN)
+                self.save()
+                log.warning(
+                    "previous run ended uncleanly; advanced SEQ %d -> %d "
+                    "to avoid replay rejection",
+                    old,
+                    self.data["seq"],
+                )
+        if self._marker is not None:
+            try:
+                self._marker.write_text(f"{os.getpid()}\n", encoding="ascii")
+                _protect(self._marker, 0o600)
+            except OSError:
+                self._marker = None
 
     def _acquire_lock(self) -> None:
         lock_path = self.path.with_suffix(self.path.suffix + ".lock")
@@ -193,6 +219,14 @@ class State:
         self._lock_fd = fd
 
     def release(self) -> None:
+        # A clean close removes the run marker; a crash leaves it behind so the
+        # next open can advance SEQ past anything the nodes have already seen.
+        if self._marker is not None:
+            try:
+                self._marker.unlink()
+            except OSError:
+                pass
+            self._marker = None
         if self._lock_fd is None:
             return
         try:

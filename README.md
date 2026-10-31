@@ -383,6 +383,11 @@ expected. To return a lamp to the vendor app, factory-reset it.
   it close, and scan immediately after the last cycle.
 - `the lamp did not answer` → is it powered and in range? The mesh proxy advert
   is flaky, so the app retries the whole find-then-connect cycle.
+- **All bulbs stop responding at once** → the controller's SEQ cursor may be
+  behind what the bulbs accepted, so every command is discarded as a replay.
+  This can follow a crash or force-quit. The app detects an unclean exit and
+  advances SEQ automatically on the next start; if it still happens, run
+  `./bulbctl controller-address` to move to a fresh source address.
 - **Add bulb** fails after provisioning with a timeout → the lamp is already on
   the mesh; do not factory-reset it. Run
   `./bulbctl configure --device NAME` to retry the AppKey install and model

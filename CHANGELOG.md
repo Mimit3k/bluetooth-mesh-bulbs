@@ -11,6 +11,14 @@ The vendored `btmesh` library has its own changelog at
 
 ### Fixed
 
+- Control no longer goes silent after an unclean shutdown. If the saved SEQ
+  cursor is behind what the bulbs have already accepted, every command is
+  discarded as a replay, which looks like all bulbs becoming unreachable at
+  once. A run marker next to the state file now detects that case and advances
+  SEQ by 10,000 on the next start.
+- **Forget** now removes the bulb from the collection immediately. It no
+  longer waits for a stale BLE link to close first, which could leave the entry
+  visible for a minute after the UI had already reported success.
 - Adding a bulb no longer fails with a configuration timeout when the lamp is
   still rebooting after provisioning. The AppKey install and model binding are
   retried up to three times, and a final failure explains that the lamp is

@@ -82,6 +82,33 @@ async def worker_round_trip():
 
 asyncio.run(worker_round_trip())
 
+
+# --- forgetting is immediate, even if closing a stale link is slow ------
+async def removal_is_immediate():
+    seen = []
+    original_drop = worker2._drop
+
+    async def slow_drop(unicast):
+        await asyncio.sleep(30)
+
+    worker2._drop = slow_drop
+    worker2.devices_changed.connect(
+        lambda devices: seen.append([d["unicast"] for d in devices])
+    )
+    task = asyncio.create_task(worker2._remove(0x0002))
+    await asyncio.sleep(0.05)
+    assert seen and seen[-1] == [], seen
+    assert "0x0002" not in worker2.state.devices
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+    worker2._drop = original_drop
+
+
+asyncio.run(removal_is_immediate())
+
 window.poll_timer.stop()
 window.temp_timer.stop()
 worker.shutdown()

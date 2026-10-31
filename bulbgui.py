@@ -318,7 +318,7 @@ class MeshWorker(QObject):
         link = self.links.pop(unicast, None)
         if link:
             try:
-                await link.close()
+                await asyncio.wait_for(link.close(), timeout=5)
             except Exception:
                 pass
 
@@ -342,7 +342,11 @@ class MeshWorker(QObject):
                 # Discard it so the next poll/action reconnects from scratch.
                 await self._drop(unicast)
                 raise
-        st["name"] = self.state.device(unicast).get("name")
+        try:
+            st["name"] = self.state.device(unicast).get("name")
+        except KeyError:
+            # The bulb was forgotten while this request was in flight.
+            return
         self.status_ready.emit(unicast, st)
 
     def control(self, unicast: int, action: str, value=None) -> None:
@@ -369,7 +373,11 @@ class MeshWorker(QObject):
                 # The command itself succeeded; only the read-back failed.
                 await self._drop(unicast)
                 raise
-        st["name"] = self.state.device(unicast).get("name")
+        try:
+            st["name"] = self.state.device(unicast).get("name")
+        except KeyError:
+            # The bulb was forgotten while this request was in flight.
+            return
         self.status_ready.emit(unicast, st)
         self.devices_changed.emit(self.state.snapshot())
 
@@ -425,10 +433,13 @@ class MeshWorker(QObject):
         self.submit(self._remove(unicast))
 
     async def _remove(self, unicast: int) -> None:
-        async with self._op_lock:
-            await self._drop(unicast)
-            self.state.remove(unicast)
+        # Drop the collection entry before touching BLE: closing a stale proxy
+        # link can block for many seconds, and the visible change must not wait
+        # for it. This mutation is synchronous, so no other coroutine on the
+        # worker loop can interleave with it.
+        self.state.remove(unicast)
         self.devices_changed.emit(self.state.snapshot())
+        await self._drop(unicast)
 
     # -- configuration files --------------------------------------------
     def export_config(
