@@ -633,7 +633,8 @@ class AddBulbDialog(QDialog):
         self._set_busy(False, f"Failed: {message}")
         QMessageBox.critical(
             self, "Could not add the bulb",
-            f"{message}\n\nFactory-reset the bulb and try again.",
+            f"{message}\n\nIf the bulb is still unprovisioned, factory-reset "
+            "it and try again.",
         )
 
     def append_log(self, line: str) -> None:

@@ -11,6 +11,10 @@ The vendored `btmesh` library has its own changelog at
 
 ### Fixed
 
+- Adding a bulb no longer fails with a configuration timeout when the lamp is
+  still rebooting after provisioning. The AppKey install and model binding are
+  retried up to three times, and a final failure explains that the lamp is
+  already on the mesh and how to retry it without a factory reset.
 - The configuration suite no longer checks POSIX `0600` mode bits on Windows,
   where `os.stat` reports `0o666` for any writable file regardless of its NTFS
   ACLs. This was the Windows CI failure; the check still runs on Linux.

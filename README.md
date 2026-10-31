@@ -383,6 +383,10 @@ expected. To return a lamp to the vendor app, factory-reset it.
   it close, and scan immediately after the last cycle.
 - `the lamp did not answer` → is it powered and in range? The mesh proxy advert
   is flaky, so the app retries the whole find-then-connect cycle.
+- **Add bulb** fails after provisioning with a timeout → the lamp is already on
+  the mesh; do not factory-reset it. Run
+  `./bulbctl configure --device NAME` to retry the AppKey install and model
+  binding. The add flow retries this automatically up to three times.
 - `another Mesh Bulbs or bulbctl process is already using …` → only one process
   may use the mesh keys at a time. Close the GUI before running the CLI (or the
   reverse). This lock is per machine; see the Windows notes about running only

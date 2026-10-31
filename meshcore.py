@@ -948,12 +948,33 @@ async def provision(state: State, uuid: str | None = None, name: str = "Bulb",
     entry["bound_models"] = []
     state.save()
 
-    async with Link(state, unicast, log_fn=log_fn) as link:
-        bound, _comp = await configure_node(state, link.node, unicast, log_fn=log_fn)
+    # A freshly provisioned node often reboots before it answers configuration
+    # messages, so the first Composition Data Get can time out. Retrying is
+    # safe: AppKey Add accepts a key that is already installed, and every model
+    # bind is idempotent.
+    last: Exception | None = None
+    for attempt in range(1, 4):
+        try:
+            async with Link(state, unicast, log_fn=log_fn) as link:
+                bound, _comp = await configure_node(
+                    state, link.node, unicast, log_fn=log_fn
+                )
+        except (TimeoutError, MeshCoreError) as exc:
+            last = exc
+            log_fn(f"configuration attempt {attempt}/3 failed: {exc}")
+            if attempt < 3:
+                await asyncio.sleep(3.0 * attempt)
+            continue
         entry["bound_models"] = bound
         state.save()
-    log_fn(f"added {name!r} at 0x{unicast:04x}, {len(bound)} models bound")
-    return unicast
+        log_fn(f"added {name!r} at 0x{unicast:04x}, {len(bound)} models bound")
+        return unicast
+
+    raise MeshCoreError(
+        f"bulb provisioned at 0x{unicast:04x}, but configuration failed: {last}. "
+        f"It is already on the mesh; retry with: "
+        f"bulbctl configure --device 0x{unicast:04x}"
+    )
 
 
 # ---------------------------------------------------------------------- link
