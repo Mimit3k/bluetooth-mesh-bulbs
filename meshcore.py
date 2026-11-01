@@ -117,9 +117,13 @@ def _unlock_fd(fd: int) -> None:
     else:
         fcntl.flock(fd, fcntl.LOCK_UN)
 
+MODEL_LIGHT_LIGHTNESS_SETUP_SERVER = 0x1301
+MODEL_LIGHT_HSL_SERVER = 0x1307
+
 CONTROLLABLE_MODELS = {
     0x1000: "Generic OnOff Server",
     0x1300: "Light Lightness Server",
+    0x1301: "Light Lightness Setup Server",
     0x1303: "Light CTL Server",
     0x1304: "Light CTL Setup Server",
     0x1306: "Light CTL Temperature Server",
@@ -130,10 +134,12 @@ CONTROLLABLE_MODELS = {
     0x130C: "Light xyL Server",
 }
 
+OP_LIGHT_HSL_GET = 0x826D
 OP_LIGHT_HSL_SET = 0x8276
 OP_LIGHT_HSL_STATUS = 0x8278
 OP_LIGHT_LIGHTNESS_RANGE_GET = 0x8257
 OP_LIGHT_LIGHTNESS_RANGE_STATUS = 0x8258
+OP_LIGHT_LIGHTNESS_RANGE_SET = 0x825B
 
 
 class MeshCoreError(Exception):
@@ -920,8 +926,9 @@ async def configure_node(state: State, node: MeshNode, unicast: int,
     Binds are retried on a fresh GATT session: right after provisioning the
     lamp often drops the proxy link part-way through, and a reconnect lets the
     remaining models bind instead of being skipped.  Only element-0 models are
-    bound, because every command the app sends targets the bulb's primary
-    element; this firmware's secondary elements never answer AppKey binding.
+    bound, because that is where the models used by the app live.  Config
+    messages are always addressed to the node's primary unicast; the element
+    address is a field inside the payload, not the destination.
     """
     resp = await node.request(
         unicast,
@@ -959,12 +966,11 @@ async def configure_node(state: State, node: MeshNode, unicast: int,
     bound: list[int] = []
     for index, element in enumerate(comp.elements):
         if index > 0:
-            # Link always addresses the bulb's primary element.  The secondary
-            # elements on this firmware (0x1306/0x130a/0x130b) do not answer
-            # AppKey binding and are never used by the app, so probing them
-            # only adds two timeouts per model to every add and configure.
+            # The app talks to the primary element only.  Secondary elements
+            # (0x1306/0x130a/0x130b) do answer binding when config messages are
+            # addressed correctly, but none of the app's commands need them.
             log_fn(
-                f"element {index} models are not addressed by this app "
+                f"element {index} models are not used by this app "
                 "(secondary elements skipped)"
             )
             continue
@@ -976,7 +982,7 @@ async def configure_node(state: State, node: MeshNode, unicast: int,
             for attempt in range(1, bind_attempts + 1):
                 try:
                     r = await node.request(
-                        unicast + index,
+                        unicast,
                         config_model_app_bind(
                             unicast + index, state.data["appkey_index"], model_id
                         ),
@@ -1235,6 +1241,95 @@ class Link:
         self._range = (1, 0xFFFF)
         return self._range
 
+    async def ensure_lightness_range(self) -> tuple[int, int]:
+        """Widen the lamp's Light Lightness range to the full 16-bit scale.
+
+        These lamps ship with a 1..100 range.  Their HSL model renders the
+        lightness field as a 16-bit value, so an HSL Set of 100 on the default
+        range is shown at roughly 0.15% brightness.  A one-time Range Set to
+        1..65535 makes HSL colour usable; brightness percentages are then
+        scaled against 65535.
+        """
+        mn, mx = await self.lightness_range()
+
+        if MODEL_LIGHT_LIGHTNESS_SETUP_SERVER not in self.models:
+            try:
+                r = await self.node.request(
+                    self.unicast,
+                    config_model_app_bind(
+                        self.unicast,
+                        self.state.data["appkey_index"],
+                        MODEL_LIGHT_LIGHTNESS_SETUP_SERVER,
+                    ),
+                    OP_CONFIG_MODEL_APP_STATUS,
+                    dev_key=True,
+                    timeout=8,
+                )
+                st = parse_config_model_app_status(_full(r))
+                if st.status == 0x00:
+                    entry = self.state.device(self.unicast)
+                    models = entry.setdefault("bound_models", [])
+                    if MODEL_LIGHT_LIGHTNESS_SETUP_SERVER not in models:
+                        models.append(MODEL_LIGHT_LIGHTNESS_SETUP_SERVER)
+                        self.state.save()
+            except (TimeoutError, MeshCoreError) as exc:
+                self.log(f"could not bind Light Lightness Setup Server: {exc}")
+
+        if mx >= 0xFFFF and mn <= 1:
+            # A state file written before the range was widened stores levels
+            # on the old 1..100 scale.  Convert those once, even when another
+            # controller already widened the lamp (or a previous run did).
+            entry = self.state.device(self.unicast)
+            level = int(entry.get("last_level") or 0)
+            changed = False
+            if 0 < level <= 100:
+                entry["last_level"] = max(mn, min(mx, round(level / 100 * mx)))
+                changed = True
+            if self._level and 0 < self._level <= 100:
+                self._level = max(mn, min(mx, round(self._level / 100 * mx)))
+                changed = True
+            if changed:
+                self.state.save()
+            return mn, mx
+
+        try:
+            r = await self.request(
+                encode_opcode(OP_LIGHT_LIGHTNESS_RANGE_SET)
+                + (1).to_bytes(2, "little")
+                + (0xFFFF).to_bytes(2, "little"),
+                OP_LIGHT_LIGHTNESS_RANGE_STATUS,
+                timeout=8,
+            )
+            p = r.params
+            if len(p) >= 5 and p[0] == 0:
+                new_mn = int.from_bytes(p[1:3], "little") or 1
+                new_mx = int.from_bytes(p[3:5], "little") or 0xFFFF
+                if new_mx > mx:
+                    # Stored levels were on the old (usually 1..100) scale.
+                    entry = self.state.device(self.unicast)
+                    level = int(entry.get("last_level") or 0)
+                    if 0 < level <= mx:
+                        entry["last_level"] = max(
+                            new_mn, min(new_mx, round(level / mx * new_mx))
+                        )
+                    if self._level and 0 < self._level <= mx:
+                        self._level = max(
+                            new_mn, min(new_mx, round(self._level / mx * new_mx))
+                        )
+                    self.state.save()
+                self._range = (new_mn, new_mx)
+                if new_mx > mx:
+                    self.log(f"lightness range widened to {new_mn}..{new_mx}")
+                else:
+                    self.log(
+                        f"lightness range unchanged at {new_mn}..{new_mx}; "
+                        "colour may render dim"
+                    )
+                return self._range
+        except (TimeoutError, MeshCoreError) as exc:
+            self.log(f"could not widen lightness range: {exc}")
+        return mn, mx
+
     async def temperature_range(self) -> tuple[int, int]:
         """The lamp's actual CTL temperature range in Kelvin."""
         if self._temp_range:
@@ -1258,7 +1353,7 @@ class Link:
 
     async def status(self) -> dict:
         out: dict = {"unicast": self.unicast}
-        mn, mx = await self.lightness_range()
+        mn, mx = await self.ensure_lightness_range()
         out["range"] = (mn, mx)
         if self.has(MODEL_LIGHT_LIGHTNESS_SERVER):
             r = await self.request(light_lightness_get(), OP_LIGHT_LIGHTNESS_STATUS)
@@ -1285,14 +1380,30 @@ class Link:
             if remembered != out["level"]:
                 entry["last_level"] = out["level"]
                 self.state.save()
+        if self.has(MODEL_LIGHT_HSL_SERVER):
+            try:
+                r = await self.request(
+                    encode_opcode(OP_LIGHT_HSL_GET), OP_LIGHT_HSL_STATUS
+                )
+                p = r.params
+                if len(p) >= 6:
+                    out["hue"] = int.from_bytes(p[2:4], "little")
+                    out["saturation"] = int.from_bytes(p[4:6], "little")
+                    out["hsl_lightness"] = int.from_bytes(p[0:2], "little")
+                    if entry.get("mode") == "colour":
+                        entry["hue"] = out["hue"]
+                        entry["saturation"] = out["saturation"]
+                        self.state.save()
+            except TimeoutError:
+                pass
         out["mode"] = entry.get("mode")
-        out["hue"] = entry.get("hue")
-        out["saturation"] = entry.get("saturation")
+        out.setdefault("hue", entry.get("hue"))
+        out.setdefault("saturation", entry.get("saturation"))
         return out
 
     async def set_power(self, on: bool) -> None:
         if self.has(MODEL_LIGHT_LIGHTNESS_SERVER):
-            mn, mx = await self.lightness_range()
+            mn, mx = await self.ensure_lightness_range()
             if on:
                 # Restore the last non-zero brightness instead of blasting 100%.
                 entry = self.state.device(self.unicast)
@@ -1306,7 +1417,7 @@ class Link:
             await self.request(generic_onoff_set(on, _tid()), OP_GENERIC_ONOFF_STATUS)
 
     async def set_level(self, pct: int) -> None:
-        mn, mx = await self.lightness_range()
+        mn, mx = await self.ensure_lightness_range()
         value = 0 if pct <= 0 else max(mn, min(mx, round(pct / 100 * mx)))
         await self.request(light_lightness_set(value, _tid()), OP_LIGHT_LIGHTNESS_STATUS)
         self._level = value
@@ -1317,7 +1428,7 @@ class Link:
                 self.state.save()
 
     async def set_temperature(self, kelvin: int) -> None:
-        mn, mx = await self.lightness_range()
+        mn, mx = await self.ensure_lightness_range()
         entry = self.state.device(self.unicast)
         level = max(mn, min(mx, self._level or int(entry.get("last_level") or 0) or mx))
         await self.request(
@@ -1336,11 +1447,13 @@ class Link:
 
     async def set_colour_hs(self, hue: int, saturation: int,
                             lightness: int | None = None) -> tuple[int, int]:
-        """Hue 0..360 and saturation 0..100 are this lamp's actual units.
+        """Hue 0..360, saturation 0..100, and a 16-bit Light Lightness level.
 
-        Lightness is the same 1..50 brightness scale as Light Lightness.
+        The lamp's HSL lightness field is measured on the same 1..65535 scale
+        as Light Lightness (the scale is widened by
+        :meth:`ensure_lightness_range`).
         """
-        mn, mx = await self.lightness_range()
+        mn, mx = await self.ensure_lightness_range()
         hue = max(0, min(360, round(hue)))
         saturation = max(0, min(100, round(saturation)))
         entry = self.state.device(self.unicast)

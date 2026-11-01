@@ -11,6 +11,18 @@ The vendored `btmesh` library has its own changelog at
 
 ### Fixed
 
+- Colour control now works on bulbs that ship with a `1..100` Light Lightness
+  range. The HSL model renders its lightness field as a 16-bit value, so an
+  HSL Set at 100 was clamped to the top of the small range and shown at about
+  0.15% brightness, leaving the bulb dim and white. The app now widens the
+  range to `1..65535` (binding the Light Lightness Setup Server when needed),
+  migrates any saved `1..100` brightness, and sends 16-bit lightness while
+  keeping hue in degrees and saturation in percent. Lightness, CTL and HSL now
+  share one scale, and status reads hue/saturation back from the lamp.
+- Config model binds are now addressed to the node's primary unicast address,
+  with the element address inside the payload, as the mesh specification
+  requires. This also means the Light Lightness Setup Server can be bound on
+  demand for bulbs that were provisioned before it was part of the model list.
 - Control no longer goes silent after an unclean shutdown. If the saved SEQ
   cursor is behind what the bulbs have already accepted, every command is
   discarded as a replay, which looks like all bulbs becoming unreachable at

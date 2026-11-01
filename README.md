@@ -287,18 +287,25 @@ before or after the command name. On Windows use `.\bulbctl.cmd` in place of
 
 Measured from its composition data and Lightness/CTL/HSL status messages:
 
-- **Brightness (Lightness)**: `1..50`, not `1..65535`. The GUI and CLI scale
-  percentages for you.
+- **Brightness (Lightness)**: the lamp ships with a `1..100` Light Lightness
+  range. The app widens it to `1..65535` the first time it controls the bulb,
+  because the HSL model renders its lightness field as a 16-bit value: on the
+  default range an HSL Set at 100 is shown at about 0.15% brightness and the
+  bulb looks dim. The GUI and CLI still show percentages and scale them for
+  you.
 - **Colour temperature (CTL)**: `1000..12000 K` (typical use 2700–6500 K).
-- **HSL colour**: hue `0..360°`, saturation `0..100 %`, lightness shares the
-  brightness scale. These are the lamp's vendor units; values are clamped if
-  you send the usual SIG `0..65535` range. Verified visually: `ff0000` is red,
-  `00ff00` green, `0000ff` blue (hue 0/120/240, saturation 100).
-- Models: OnOff `0x1000`, Lightness `0x1300`, CTL `0x1303`, HSL `0x1307`
-  (element 0), CTL Temperature `0x1306` (element 1), HSL Hue/Saturation
-  `0x130A`/`0x130B` (elements 2/3). The app binds only the element-0 models and
-  drives temperature and colour through them; this firmware does not answer
-  AppKey binding for the secondary elements, and they are not needed.
+- **HSL colour**: hue `0..360°`, saturation `0..100 %`, lightness on the same
+  `1..65535` Lightness scale. These are the lamp's vendor units; the usual SIG
+  16-bit hue/saturation values are clamped (for example, saturation `0xFFFF`
+  becomes `100`). Verified visually: `ff0000` is red, `00ff00` green,
+  `0000ff` blue (hue 0/120/240, saturation 100).
+- Models: OnOff `0x1000`, Lightness `0x1300`, Lightness Setup `0x1301`, CTL
+  `0x1303`, HSL `0x1307` (element 0), CTL Temperature `0x1306` (element 1),
+  HSL Hue/Saturation `0x130A`/`0x130B` (elements 2/3). The app binds the
+  element-0 models it needs and drives temperature and colour through them.
+  Secondary elements do answer AppKey binding when config messages are sent
+  to the node's primary address with the element address in the payload, but
+  the app does not need them.
 - It ignores Generic Level SET, so brightness is driven through Lightness SET.
 
 ## State and backup
