@@ -287,12 +287,17 @@ before or after the command name. On Windows use `.\bulbctl.cmd` in place of
 
 Measured from its composition data and Lightness/CTL/HSL status messages:
 
-- **Brightness (Lightness)**: the lamp ships with a `1..100` Light Lightness
-  range. The app widens it to `1..65535` the first time it controls the bulb,
-  because the HSL model renders its lightness field as a 16-bit value: on the
-  default range an HSL Set at 100 is shown at about 0.15% brightness and the
-  bulb looks dim. The GUI and CLI still show percentages and scale them for
-  you.
+- **Brightness (Lightness)**: the bulbs ship with a small range: `1..50` on
+  firmware `33.02.50` and `1..100` on firmware `34.02.09`. The app widens it
+  to `1..65535` the first time it controls the bulb. This matters because the
+  newer firmware renders the HSL lightness field as an absolute 16-bit value,
+  so an HSL Set at 100 on the default range is only about 0.15% brightness.
+  The app records the old range maximum alongside the saved level, so
+  migrating from either `1..50` or `1..100` keeps the same percentage. The GUI
+  and CLI still show percentages and scale them for you.
+- **Colour vs white**: the RGB LEDs are much dimmer than the white LED, so a
+  saturated colour at 100% is not as bright as white at 100%. Colour changes
+  can also ramp over a few seconds.
 - **Colour temperature (CTL)**: `1000..12000 K` (typical use 2700–6500 K).
 - **HSL colour**: hue `0..360°`, saturation `0..100 %`, lightness on the same
   `1..65535` Lightness scale. These are the lamp's vendor units; the usual SIG

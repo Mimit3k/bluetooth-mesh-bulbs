@@ -197,4 +197,21 @@ assert not any(
 
 state3.release()
 
+# --- 4. A 1..50 bulb at its maximum keeps full brightness -----------------
+# Bulb 1 ships with a 1..50 range, so a stored level of 50 means 100%, not
+# 50%.  Migration must use the old range maximum, not a hard-coded 100.
+state4 = make_state(root / "fourth", [0x1000, 0x1300, 0x1307, 0x1301])
+state4.device(UNICAST)["last_level"] = 50
+state4.save()
+link4 = meshcore.Link(state4, UNICAST)
+sim4 = {"range": (1, 50), "calls": []}
+install_transport(link4, sim4)
+
+mn, mx = asyncio.run(link4.ensure_lightness_range())
+assert (mn, mx) == (1, 0xFFFF), (mn, mx)
+assert state4.device(UNICAST)["last_level"] == 0xFFFF, state4.device(UNICAST)
+assert state4.device(UNICAST)["level_range_max"] == 0xFFFF
+
+state4.release()
+
 print("colour-scale regression test passed")
