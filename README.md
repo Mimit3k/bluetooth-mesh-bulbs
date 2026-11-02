@@ -288,22 +288,25 @@ before or after the command name. On Windows use `.\bulbctl.cmd` in place of
 Measured from its composition data and Lightness/CTL/HSL status messages:
 
 - **Brightness (Lightness)**: the bulbs ship with a small range: `1..50` on
-  firmware `33.02.50` and `1..100` on firmware `34.02.09`. The app widens it
-  to `1..65535` the first time it controls the bulb. This matters because the
-  newer firmware renders the HSL lightness field as an absolute 16-bit value,
-  so an HSL Set at 100 on the default range is only about 0.15% brightness.
-  The app records the old range maximum alongside the saved level, so
-  migrating from either `1..50` or `1..100` keeps the same percentage. The GUI
-  and CLI still show percentages and scale them for you.
+  firmware `33.02.50` and `1..100` on firmware `34.02.09`. The app leaves that
+  range alone and scales brightness to it, so 50 % on the `1..100` bulb is 50
+  and 50 % on the `1..50` bulb is 25. An earlier build widened the range to
+  `1..65535`, which made the slider move while the LED stayed at full
+  brightness; a bulb still carrying the widened range is restored to its
+  factory maximum the first time it connects. The GUI and CLI show
+  percentages and scale them for you.
 - **Colour vs white**: the RGB LEDs are much dimmer than the white LED, so a
-  saturated colour at 100% is not as bright as white at 100%. Colour changes
+  saturated colour at 100 % is not as bright as white at 100 %. Colour changes
   can also ramp over a few seconds.
 - **Colour temperature (CTL)**: `1000..12000 K` (typical use 2700–6500 K).
 - **HSL colour**: hue `0..360°`, saturation `0..100 %`, lightness on the same
-  `1..65535` Lightness scale. These are the lamp's vendor units; the usual SIG
+  factory Lightness scale. These are the lamp's vendor units; the usual SIG
   16-bit hue/saturation values are clamped (for example, saturation `0xFFFF`
-  becomes `100`). Verified visually: `ff0000` is red, `00ff00` green,
-  `0000ff` blue (hue 0/120/240, saturation 100).
+  becomes `100`). Lightness behaves like HSL's *L*: at the very top of the
+  range the colour washes out to white, so the app maps colour brightness onto
+  the saturated half of the range (`1..50` on the older bulb, `1..50` of the
+  `1..100` range on the newer one). Verified visually: `ff0000` is red,
+  `00ff00` green, `0000ff` blue (hue 0/120/240, saturation 100).
 - Models: OnOff `0x1000`, Lightness `0x1300`, Lightness Setup `0x1301`, CTL
   `0x1303`, HSL `0x1307` (element 0), CTL Temperature `0x1306` (element 1),
   HSL Hue/Saturation `0x130A`/`0x130B` (elements 2/3). The app binds the

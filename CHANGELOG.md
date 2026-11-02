@@ -22,17 +22,17 @@ The vendored `btmesh` library has its own changelog at
   back and swallow the change, and the brightness slider is re-enabled after a
   failed request so it can be retried.
 - Colour control now works on both firmware generations. Bulb 1 (firmware
-  `33.02.50`) ships with a `1..50` Light Lightness range and scales HSL
-  lightness to that range; Bulb 2 (firmware `34.02.09`) ships with `1..100`
-  and renders HSL lightness as an absolute 16-bit value, so an HSL Set at 100
-  was clamped to the top of the small range and shown at about 0.15%
-  brightness, leaving the bulb dim and white. The app now widens either range
-  to `1..65535` (binding the Light Lightness Setup Server when needed) and
-  sends 16-bit lightness while keeping hue in degrees and saturation in
-  percent. It records the old range maximum with the saved level, so migrating
-  `1..50` (where 50 means 100%) and `1..100` (where 100 means 100%) both keep
-  the same percentage. Lightness, CTL and HSL share one scale, and status
-  reads hue/saturation back from the lamp.
+  `33.02.50`) ships with a `1..50` Light Lightness range and Bulb 2 (firmware
+  `34.02.09`) with `1..100`. Earlier builds widened the range to `1..65535`,
+  which made the brightness slider move while the LED stayed at full
+  brightness. The app now keeps each lamp's factory range and scales Light
+  Lightness, CTL lightness and HSL lightness to it, so white brightness dims
+  correctly on both bulbs. Light HSL lightness behaves like HSL's *L*: near
+  the top of the range the colour washes out to white, so colour brightness is
+  mapped onto the saturated half of the range. Hue is sent in degrees and
+  saturation in percent, which is what the lamps report in their HSL Range
+  status. Brightness is stored as a percentage, so it survives switching
+  between white and colour mode.
 - Config model binds are now addressed to the node's primary unicast address,
   with the element address inside the payload, as the mesh specification
   requires. This also means the Light Lightness Setup Server can be bound on

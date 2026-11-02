@@ -700,7 +700,6 @@ class MainWindow(QMainWindow):
         self._busy = False
         self._queued: tuple[str, object] | None = None
         self._last_level = 0
-        self._range_max = 50
         self._last_hue: int | None = None
         self._last_sat: int | None = None
         # True while the temperature slider shows an estimated white point for
@@ -1062,9 +1061,7 @@ class MainWindow(QMainWindow):
         self._updating = True
         try:
             level = int(st.get("level_pct", 0))
-            mn, mx = st.get("range", (1, 50))
-            self._range_max = mx
-            self._last_level = st.get("level", 0) or 0
+            self._last_level = level
             if not self.level_timer.isActive():
                 # A drag is about to send its own value; a poll that arrives in
                 # the meantime must not snap the slider back to the old state.
@@ -1118,8 +1115,7 @@ class MainWindow(QMainWindow):
             self.name_label.setText(name)
             self.power_button.setEnabled(True)
             self.meta_label.setText(
-                f"0x{unicast:04x}  ·  {dev.get('address', '')}  ·  "
-                f"{st.get('level', 0)}/{mx}"
+                f"0x{unicast:04x}  ·  {dev.get('address', '')}  ·  {level}%"
             )
             self._show_stored_colour(st)
             self.statusBar().showMessage(f"{name} · connected", 3000)
@@ -1198,7 +1194,7 @@ class MainWindow(QMainWindow):
 
     def _send_level(self) -> None:
         value = self.level_slider.value()
-        if value == round(self._last_level * 100 / self._range_max):
+        if value == self._last_level:
             return
         self._send("level", value)
 

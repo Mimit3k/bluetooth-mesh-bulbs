@@ -252,7 +252,14 @@ class State:
             pass
 
     def _migrate(self) -> None:
-        """Bring pre-GUI state files (single bulb, global bound_models) forward."""
+        """Bring older state files forward to the current schema.
+
+        Brightness used to be stored as a raw Light Lightness value together
+        with the range it was measured on, which breaks as soon as the range
+        changes.  The canonical value is now ``last_level_pct`` (0..100), and
+        each lamp's factory range is remembered separately so a range widened
+        by an older build can be restored.
+        """
         legacy_models = self.data.pop("bound_models", None)
         changed = legacy_models is not None
         entries = list(self.data["devices"].items())
@@ -262,6 +269,36 @@ class State:
                 changed = True
             if "bound_models" not in entry:
                 entry["bound_models"] = legacy_models or []
+                changed = True
+
+            old_range_max = int(entry.get("level_range_max") or 0)
+            if "factory_range_max" not in entry:
+                # Older files recorded the range as level_range_max.  Only the
+                # lamp's small factory range is useful; the 65535 value written
+                # by the range-widening build must not be mistaken for one.
+                if 1 < old_range_max < 0xFFFF:
+                    entry["factory_range_max"] = old_range_max
+                changed = True
+
+            if "last_level_pct" not in entry:
+                old_level = int(entry.get("last_level") or 0)
+                old_max = old_range_max or int(entry.get("factory_range_max") or 0)
+                if not old_max:
+                    # Very old files predate both fields.  Small values were on
+                    # the factory 1..100 scale, larger ones on the 16-bit one.
+                    old_max = 100 if 0 < old_level <= 100 else 0xFFFF
+                if old_level <= 0:
+                    pct = 0
+                else:
+                    pct = max(0, min(100, round(old_level * 100 / old_max)))
+                entry["last_level_pct"] = pct
+                changed = True
+
+            # Superseded fields: brightness is a percentage and the scale is
+            # discovered from the lamp itself.
+            if entry.pop("last_level", None) is not None:
+                changed = True
+            if entry.pop("level_range_max", None) is not None:
                 changed = True
         if changed:
             self.save()
@@ -485,10 +522,26 @@ def _normalise_device(key, raw) -> tuple[str, dict]:
         ("saturation", 0, 100),
         ("temperature", 1, 0xFFFF),
         ("last_level", 0, 0xFFFF),
+        ("last_level_pct", 0, 100),
+        ("factory_range_max", 1, 0xFFFF),
     ):
         value = entry.get(field)
         if value is not None:
             entry[field] = _config_int(value, f"{key}.{field}", minimum, maximum)
+    if "last_level_pct" not in entry and "last_level" in entry:
+        # Configuration exported by the range-widening build: convert its raw
+        # level to the percentage the current schema stores.
+        old_level = int(entry["last_level"])
+        old_max = int(
+            entry.get("level_range_max")
+            or entry.get("factory_range_max")
+            or (100 if 0 < old_level <= 100 else 0xFFFF)
+        )
+        entry["last_level_pct"] = (
+            max(0, min(100, round(old_level * 100 / old_max))) if old_level > 0 else 0
+        )
+    entry.pop("last_level", None)
+    entry.pop("level_range_max", None)
     mode = entry.get("mode")
     if mode is not None and not isinstance(mode, str):
         raise MeshCoreError(f"invalid configuration: {key}.mode must be text")
@@ -1123,7 +1176,6 @@ class Link:
         self.node = None
         self._range: tuple[int, int] | None = None
         self._temp_range: tuple[int, int] | None = None
-        self._level: int | None = None
 
     def set_target(self, unicast: int) -> None:
         """Point an open session at another bulb without reconnecting.
@@ -1141,7 +1193,6 @@ class Link:
         # Per-node caches must not leak between bulbs.
         self._range = None
         self._temp_range = None
-        self._level = None
         if self.node is not None:
             self.node.add_device(unicast, bytes.fromhex(entry["device_key"]))
             self.log(f"targeting 0x{unicast:04x}")
@@ -1263,18 +1314,36 @@ class Link:
         return self._range
 
     async def ensure_lightness_range(self) -> tuple[int, int]:
-        """Widen the lamp's Light Lightness range to the full 16-bit scale.
+        """Return the lamp's factory Light Lightness range.
 
-        These lamps ship with a small range (1..50 on older firmware, 1..100
-        on newer firmware).  The newer firmware also renders the HSL lightness
-        field as an absolute 16-bit value, so an HSL Set of 100 on the default
-        range is shown at roughly 0.15% brightness.  A one-time Range Set to
-        1..65535 makes both behaviours agree; brightness percentages are then
-        scaled against 65535.
+        Light Lightness, CTL lightness and HSL lightness are all scaled *by
+        this range*: on a lamp that reports 1..50, sending 50 is full
+        brightness and 5 is 10%.  The range must therefore be left alone.
+        Widening it to 1..65535 (an earlier build did that to make colour
+        work) makes the firmware treat every value as nearly full brightness,
+        so the slider moved but the LED did not dim.
+
+        A lamp still carrying the old widened range is restored to the factory
+        maximum remembered in the state file; that is the only case in which a
+        Range Set is sent.
         """
         mn, mx = await self.lightness_range()
         entry = self.state.device(self.unicast)
+        factory = int(entry.get("factory_range_max") or 0)
 
+        if mx >= 0xFFFF:
+            target = factory if 1 < factory < 0xFFFF else 100
+            restored = await self._restore_lightness_range(target)
+            if restored:
+                mn, mx = restored
+
+        if 1 < mx < 0xFFFF and entry.get("factory_range_max") != mx:
+            entry["factory_range_max"] = mx
+            self.state.save()
+        return mn, mx
+
+    async def _restore_lightness_range(self, target_max: int) -> tuple[int, int] | None:
+        """Put a lamp widened by an older build back on its factory range."""
         if MODEL_LIGHT_LIGHTNESS_SETUP_SERVER not in self.models:
             try:
                 r = await self.node.request(
@@ -1290,69 +1359,36 @@ class Link:
                 )
                 st = parse_config_model_app_status(_full(r))
                 if st.status == 0x00:
+                    entry = self.state.device(self.unicast)
                     models = entry.setdefault("bound_models", [])
                     if MODEL_LIGHT_LIGHTNESS_SETUP_SERVER not in models:
                         models.append(MODEL_LIGHT_LIGHTNESS_SETUP_SERVER)
                         self.state.save()
-            except (TimeoutError, MeshCoreError) as exc:
+            except (TimeoutError, MeshCoreError, AttributeError) as exc:
                 self.log(f"could not bind Light Lightness Setup Server: {exc}")
+                return None
 
-        # Work out which scale the stored level was written on.  Legacy state
-        # files have no level_range_max: a still-small reported range is that
-        # scale (Bulb 1 uses 1..50), otherwise assume the old 1..100 default.
-        stored_max = int(entry.get("level_range_max") or 0)
-        stored_level = int(entry.get("last_level") or 0)
-        if stored_max:
-            old_max = stored_max
-        elif 0 < stored_level <= 100:
-            old_max = mx if mx <= 100 else 100
-        else:
-            old_max = mx
-
-        if not (mx >= 0xFFFF and mn <= 1):
-            try:
-                r = await self.request(
-                    encode_opcode(OP_LIGHT_LIGHTNESS_RANGE_SET)
-                    + (1).to_bytes(2, "little")
-                    + (0xFFFF).to_bytes(2, "little"),
-                    OP_LIGHT_LIGHTNESS_RANGE_STATUS,
-                    timeout=8,
-                )
-                p = r.params
-                if len(p) >= 5 and p[0] == 0:
-                    new_mn = int.from_bytes(p[1:3], "little") or 1
-                    new_mx = int.from_bytes(p[3:5], "little") or 0xFFFF
-                    self._range = (new_mn, new_mx)
-                    if new_mx > mx:
-                        self.log(f"lightness range widened to {new_mn}..{new_mx}")
-                    else:
-                        self.log(
-                            f"lightness range unchanged at {new_mn}..{new_mx}; "
-                            "colour may render dim"
-                        )
-                    mn, mx = new_mn, new_mx
-            except (TimeoutError, MeshCoreError) as exc:
-                self.log(f"could not widen lightness range: {exc}")
-
-        changed = False
-        if old_max and mx and old_max != mx:
-            level = int(entry.get("last_level") or 0)
-            if 0 < level <= old_max:
-                entry["last_level"] = max(
-                    mn, min(mx, round(level / old_max * mx))
-                )
-                changed = True
-            if self._level and 0 < self._level <= old_max:
-                self._level = max(
-                    mn, min(mx, round(self._level / old_max * mx))
-                )
-                changed = True
-        if entry.get("level_range_max") != mx:
-            entry["level_range_max"] = mx
-            changed = True
-        if changed:
-            self.state.save()
-        return mn, mx
+        try:
+            r = await self.request(
+                encode_opcode(OP_LIGHT_LIGHTNESS_RANGE_SET)
+                + (1).to_bytes(2, "little")
+                + target_max.to_bytes(2, "little"),
+                OP_LIGHT_LIGHTNESS_RANGE_STATUS,
+                timeout=8,
+            )
+        except (TimeoutError, MeshCoreError) as exc:
+            self.log(f"could not restore lightness range: {exc}")
+            return None
+        p = r.params
+        if len(p) < 5 or p[0] != 0:
+            return None
+        mn = int.from_bytes(p[1:3], "little") or 1
+        mx = int.from_bytes(p[3:5], "little")
+        if not 0 < mx < 0xFFFF:
+            return None
+        self._range = (mn, mx)
+        self.log(f"restored lightness range to {mn}..{mx}")
+        return self._range
 
     async def temperature_range(self) -> tuple[int, int]:
         """The lamp's actual CTL temperature range in Kelvin."""
@@ -1375,20 +1411,72 @@ class Link:
         self._temp_range = (2000, 6500)
         return self._temp_range
 
+    @staticmethod
+    def _scale_level(pct: int, mn: int, mx: int) -> int:
+        """Percentage -> Light Lightness/CTL value on the lamp's factory range."""
+        if pct <= 0:
+            return 0
+        return max(mn, min(mx, round(pct * mx / 100)))
+
+    @staticmethod
+    def _hsl_level(pct: int, mx: int) -> int:
+        """Percentage -> Light HSL lightness on the lamp's factory range.
+
+        The HSL lightness field is scaled by the same range as Light
+        Lightness (1..50 on older firmware, 1..100 on newer firmware), and it
+        behaves like HSL's *L*: at the top of the range the colour washes out
+        to white, while half the range is the brightest fully saturated
+        colour.  Colour brightness therefore uses the lower half of the range
+        so that the slider dims and brightens the colour without ever
+        desaturating it.
+        """
+        if pct <= 0:
+            return 0
+        top = max(1, mx // 2)
+        # Round half up so the slider's midpoint is never one step low.
+        return max(1, min(top, (pct * top + 50) // 100))
+
+    def _level_pct(self) -> int:
+        entry = self.state.device(self.unicast)
+        try:
+            return max(0, min(100, int(entry.get("last_level_pct", 100))))
+        except (TypeError, ValueError):
+            return 100
+
+    def _remember_level_pct(self, pct: int) -> None:
+        pct = max(0, min(100, int(pct)))
+        entry = self.state.device(self.unicast)
+        if int(entry.get("last_level_pct", -1)) != pct:
+            entry["last_level_pct"] = pct
+            self.state.save()
+
     async def status(self) -> dict:
         out: dict = {"unicast": self.unicast}
         mn, mx = await self.ensure_lightness_range()
         out["range"] = (mn, mx)
+        entry = self.state.device(self.unicast)
+        mode = entry.get("mode")
+
+        # On/off lives in Generic OnOff; the lightness models keep their value
+        # while the LED is off, so lightness > 0 cannot mean "on".
+        on: bool | None = None
+        if self.has(MODEL_GENERIC_ONOFF_SERVER):
+            try:
+                r = await self.request(generic_onoff_get(), OP_GENERIC_ONOFF_STATUS)
+                on = bool(parse_generic_onoff_status(_full(r)).present_onoff)
+            except TimeoutError:
+                pass
+
         if self.has(MODEL_LIGHT_LIGHTNESS_SERVER):
             r = await self.request(light_lightness_get(), OP_LIGHT_LIGHTNESS_STATUS)
             st = parse_light_lightness_status(_full(r))
             out["level"] = st.present_lightness
-            out["level_pct"] = round(st.present_lightness * 100 / mx) if mx else 0
-            out["on"] = st.present_lightness > 0
-            self._level = st.present_lightness
-        elif self.has(MODEL_GENERIC_ONOFF_SERVER):
-            r = await self.request(generic_onoff_get(), OP_GENERIC_ONOFF_STATUS)
-            out["on"] = bool(parse_generic_onoff_status(_full(r)).present_onoff)
+            out["level_pct"] = (
+                max(0, min(100, round(st.present_lightness * 100 / mx))) if mx else 0
+            )
+            if on is None:
+                on = st.present_lightness > 0
+
         if self.has(MODEL_LIGHT_CTL_SERVER):
             try:
                 r = await self.request(light_ctl_get(), OP_LIGHT_CTL_STATUS)
@@ -1398,13 +1486,7 @@ class Link:
                 out["temperature_range"] = await self.temperature_range()
             except TimeoutError:
                 out["temperature"] = None
-        entry = self.state.device(self.unicast)
-        if out.get("level"):
-            remembered = int(entry.get("last_level") or 0)
-            if remembered != out["level"] or entry.get("level_range_max") != mx:
-                entry["last_level"] = out["level"]
-                entry["level_range_max"] = mx
-                self.state.save()
+
         if self.has(MODEL_LIGHT_HSL_SERVER):
             try:
                 r = await self.request(
@@ -1415,59 +1497,94 @@ class Link:
                     out["hue"] = int.from_bytes(p[2:4], "little")
                     out["saturation"] = int.from_bytes(p[4:6], "little")
                     out["hsl_lightness"] = int.from_bytes(p[0:2], "little")
-                    if entry.get("mode") == "colour":
+                    if mode == "colour":
                         entry["hue"] = out["hue"]
                         entry["saturation"] = out["saturation"]
                         self.state.save()
             except TimeoutError:
                 pass
-        out["mode"] = entry.get("mode")
+
+        if mode == "colour":
+            # HSL lightness is absolute 16-bit and its Status clamps to the
+            # factory range, so the read-back cannot derive the real
+            # brightness.  The percentage we last sent is authoritative.
+            pct = self._level_pct()
+            out["level_pct"] = pct
+            out["level"] = self._scale_level(pct, mn, mx)
+        elif "level_pct" in out:
+            self._remember_level_pct(out["level_pct"])
+
+        if on is not None:
+            out["on"] = on
+        out["mode"] = mode
         out.setdefault("hue", entry.get("hue"))
         out.setdefault("saturation", entry.get("saturation"))
         return out
 
     async def set_power(self, on: bool) -> None:
-        if self.has(MODEL_LIGHT_LIGHTNESS_SERVER):
-            mn, mx = await self.ensure_lightness_range()
-            if on:
-                # Restore the last non-zero brightness instead of blasting 100%.
-                entry = self.state.device(self.unicast)
-                remembered = int(entry.get("last_level") or 0)
-                value = max(mn, min(mx, self._level or remembered or mx))
-            else:
-                value = 0
-            await self.request(light_lightness_set(value, _tid()), OP_LIGHT_LIGHTNESS_STATUS)
-            self._level = value
-        else:
+        if self.has(MODEL_GENERIC_ONOFF_SERVER):
             await self.request(generic_onoff_set(on, _tid()), OP_GENERIC_ONOFF_STATUS)
+            if on:
+                # OnOff restores the LED output; re-apply the model's lightness
+                # so a lamp that was off comes back at the remembered level.
+                await self._apply_level(self._level_pct() or 100)
+        elif self.has(MODEL_LIGHT_LIGHTNESS_SERVER):
+            mn, mx = await self.ensure_lightness_range()
+            value = self._scale_level(self._level_pct(), mn, mx) if on else 0
+            await self.request(
+                light_lightness_set(value, _tid()), OP_LIGHT_LIGHTNESS_STATUS
+            )
+        else:
+            raise MeshCoreError("lamp has neither Generic OnOff nor Light Lightness")
+
+    async def _apply_level(self, pct: int) -> None:
+        """Drive the model currently in charge of the LED output."""
+        pct = max(0, min(100, int(pct)))
+        entry = self.state.device(self.unicast)
+        if entry.get("mode") == "colour" and self.has(MODEL_LIGHT_HSL_SERVER):
+            _mn, mx = await self.ensure_lightness_range()
+            hue = int(entry.get("hue") or 0)
+            saturation = int(entry.get("saturation") or 0)
+            await self.request(
+                light_hsl_set(self._hsl_level(pct, mx), hue, saturation, _tid()),
+                OP_LIGHT_HSL_STATUS,
+            )
+        elif self.has(MODEL_LIGHT_CTL_SERVER):
+            mn, mx = await self.ensure_lightness_range()
+            kelvin = int(entry.get("temperature") or 2700)
+            await self.request(
+                light_ctl_set(self._scale_level(pct, mn, mx), kelvin, 0, _tid()),
+                OP_LIGHT_CTL_STATUS,
+            )
+        elif self.has(MODEL_LIGHT_LIGHTNESS_SERVER):
+            mn, mx = await self.ensure_lightness_range()
+            await self.request(
+                light_lightness_set(self._scale_level(pct, mn, mx), _tid()),
+                OP_LIGHT_LIGHTNESS_STATUS,
+            )
+        else:
+            raise MeshCoreError("lamp has no lightness model")
 
     async def set_level(self, pct: int) -> None:
-        mn, mx = await self.ensure_lightness_range()
-        value = 0 if pct <= 0 else max(mn, min(mx, round(pct / 100 * mx)))
-        await self.request(light_lightness_set(value, _tid()), OP_LIGHT_LIGHTNESS_STATUS)
-        self._level = value
-        if value:
-            entry = self.state.device(self.unicast)
-            if (
-                entry.get("last_level") != value
-                or entry.get("level_range_max") != mx
-            ):
-                entry["last_level"] = value
-                entry["level_range_max"] = mx
-                self.state.save()
+        pct = max(0, min(100, int(pct)))
+        if pct <= 0 and self.has(MODEL_GENERIC_ONOFF_SERVER):
+            # Keep the model's lightness so switching back on restores it.
+            await self.request(generic_onoff_set(False, _tid()), OP_GENERIC_ONOFF_STATUS)
+        else:
+            await self._apply_level(pct)
+        self._remember_level_pct(pct)
 
     async def set_temperature(self, kelvin: int) -> None:
         mn, mx = await self.ensure_lightness_range()
         entry = self.state.device(self.unicast)
-        level = max(mn, min(mx, self._level or int(entry.get("last_level") or 0) or mx))
+        pct = self._level_pct() or 100
+        level = self._scale_level(pct, mn, mx)
         await self.request(
             light_ctl_set(level, kelvin, 0, _tid()), OP_LIGHT_CTL_STATUS
         )
         entry["mode"] = "temperature"
         entry["temperature"] = kelvin
-        entry["last_level"] = level
-        entry["level_range_max"] = mx
-        self._level = level
+        entry["last_level_pct"] = pct
         self.state.save()
 
     async def set_colour(self, rgb_hex: str, lightness: int | None = None) -> tuple[int, int]:
@@ -1477,33 +1594,32 @@ class Link:
 
     async def set_colour_hs(self, hue: int, saturation: int,
                             lightness: int | None = None) -> tuple[int, int]:
-        """Hue 0..360, saturation 0..100, and a 16-bit Light Lightness level.
+        """Set hue 0..360 and saturation 0..100 at a brightness percentage.
 
-        The lamp's HSL lightness field is measured on the same 1..65535 scale
-        as Light Lightness (the scale is widened by
-        :meth:`ensure_lightness_range`).
+        ``lightness`` is a percentage (0..100); when omitted the remembered
+        brightness is used.  Hue and saturation are sent in the lamp's own
+        units (degrees and percent, as reported by its HSL Range), and the
+        brightness is mapped onto the saturated half of the factory
+        lightness range (see :meth:`_hsl_level`).
         """
-        mn, mx = await self.ensure_lightness_range()
         hue = max(0, min(360, round(hue)))
         saturation = max(0, min(100, round(saturation)))
+        _mn, mx = await self.ensure_lightness_range()
         entry = self.state.device(self.unicast)
         if lightness is None:
-            level = self._level or int(entry.get("last_level") or 0) or mx
+            pct = self._level_pct() or 100
         else:
-            level = lightness
-        level = 0 if level < mn else max(mn, min(mx, round(level)))
+            pct = max(0, min(100, round(lightness)))
+        level = self._hsl_level(pct, mx)
         r = await self.request(
             light_hsl_set(level, hue, saturation, _tid()), OP_LIGHT_HSL_STATUS
         )
-        self._level = level
-        if level:
-            entry["last_level"] = level
-        entry["level_range_max"] = mx
         entry["mode"] = "colour"
         entry["hue"] = hue
         entry["saturation"] = saturation
+        entry["last_level_pct"] = pct
         self.state.save()
-        # Status echoes (lightness, hue, saturation) in the lamp's own units.
+        # Status echoes (hue, saturation) in the lamp's own units.
         if len(r.params) >= 6:
             return (
                 int.from_bytes(r.params[2:4], "little"),
@@ -1533,8 +1649,9 @@ def _tid() -> int:
 def hue_sat_from_hex(text: str) -> tuple[int, int]:
     """#RRGGBB -> (hue 0..360, saturation 0..100).
 
-    Standard HSL hue/saturation. The lamp's HSL *lightness* field is its
-    brightness (1..50), not colour lightness, so it is supplied separately.
+    Standard HSL hue/saturation, sent to the lamp in its own units. The lamp's
+    HSL *lightness* field is its brightness on the factory range, not the HSL
+    lightness of the requested colour, so it is supplied separately.
     """
     h = text.strip().lstrip("#")
     if len(h) != 6:

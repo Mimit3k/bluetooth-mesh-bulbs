@@ -53,7 +53,6 @@ state = make_state(root)
 link = meshcore.Link(state, FIRST)
 link._range = (1, 100)
 link._temp_range = (2000, 6500)
-link._level = 1234
 
 added: list[tuple[int, bytes]] = []
 
@@ -67,7 +66,7 @@ link.node = FakeNode()
 link.set_target(SECOND)
 
 assert link.unicast == SECOND
-assert link._range is None and link._temp_range is None and link._level is None
+assert link._range is None and link._temp_range is None
 assert added == [(SECOND, b"\x22" * 16)], added
 
 # Setting the same target again must not touch the session or the node.
