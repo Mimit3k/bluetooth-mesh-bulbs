@@ -395,6 +395,12 @@ expected. To return a lamp to the vendor app, factory-reset it.
 - `Bluetooth is off or blocked` → `sudo rfkill unblock bluetooth`
 - **No unprovisioned bulbs found** → factory-reset the lamp (5× off/on), keep
   it close, and scan immediately after the last cycle.
+- **Controls stop working after switching bulbs, or a second bulb goes silent**
+  → some Bluetooth adapters service only one GATT connection at a time. The app
+  deliberately keeps one proxy session open and retargets it when you pick
+  another bulb; a second session would make both go silent. If an older build
+  (or another program) still holds a connection, close it or run
+  `bluetoothctl disconnect <address>` and click the bulb again.
 - `the lamp did not answer` → is it powered and in range? The mesh proxy advert
   is flaky, so the app retries the whole find-then-connect cycle.
 - **All bulbs stop responding at once** → the controller's SEQ cursor may be

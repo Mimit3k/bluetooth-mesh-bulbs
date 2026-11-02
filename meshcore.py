@@ -1125,6 +1125,27 @@ class Link:
         self._temp_range: tuple[int, int] | None = None
         self._level: int | None = None
 
+    def set_target(self, unicast: int) -> None:
+        """Point an open session at another bulb without reconnecting.
+
+        A GATT proxy connection relays to every node in the mesh, and some
+        adapters service only one connection at a time: a second connection to
+        another proxy can make both sessions go silent.  The GUI therefore
+        keeps one session and switches its target instead of opening a link
+        per bulb.
+        """
+        if unicast == self.unicast:
+            return
+        entry = self.state.device(unicast)
+        self.unicast = unicast
+        # Per-node caches must not leak between bulbs.
+        self._range = None
+        self._temp_range = None
+        self._level = None
+        if self.node is not None:
+            self.node.add_device(unicast, bytes.fromhex(entry["device_key"]))
+            self.log(f"targeting 0x{unicast:04x}")
+
     async def __aenter__(self) -> "Link":
         await self.connect()
         return self

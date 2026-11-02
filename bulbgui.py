@@ -251,7 +251,11 @@ class MeshWorker(QObject):
     def __init__(self, state_path: str) -> None:
         super().__init__()
         self.state = meshcore.State(state_path)
-        self.links: dict[int, meshcore.Link] = {}
+        # One proxy session for the whole mesh.  A GATT proxy relays to every
+        # node, and some adapters service only one connection at a time: a
+        # second link to another bulb can silence both.  `_link` switches this
+        # session's target instead of opening a connection per bulb.
+        self.link: meshcore.Link | None = None
         self._op_lock = asyncio.Lock()
         self._loop: asyncio.AbstractEventLoop | None = None
         self._thread: threading.Thread | None = None
@@ -300,23 +304,19 @@ class MeshWorker(QObject):
 
     # -- links -----------------------------------------------------------
     async def _link(self, unicast: int) -> meshcore.Link:
-        link = self.links.get(unicast)
-        if link is None or not link.connected:
-            link = meshcore.Link(self.state, unicast, log_fn=self.log_line.emit)
-            await link.connect()
-            self.links[unicast] = link
-        return link
+        if self.link is None or not self.link.connected:
+            self.link = meshcore.Link(self.state, unicast, log_fn=self.log_line.emit)
+            await self.link.connect()
+        else:
+            self.link.set_target(unicast)
+        return self.link
 
     async def _close_all(self) -> None:
-        for link in list(self.links.values()):
-            try:
-                await link.close()
-            except Exception:
-                pass
-        self.links.clear()
+        await self._drop()
 
-    async def _drop(self, unicast: int) -> None:
-        link = self.links.pop(unicast, None)
+    async def _drop(self, unicast: int | None = None) -> None:
+        # `unicast` is kept for call-site clarity: there is only one session.
+        link, self.link = self.link, None
         if link:
             try:
                 await asyncio.wait_for(link.close(), timeout=5)
@@ -1065,8 +1065,11 @@ class MainWindow(QMainWindow):
             mn, mx = st.get("range", (1, 50))
             self._range_max = mx
             self._last_level = st.get("level", 0) or 0
-            self.level_slider.setValue(level)
-            self.level_value.setText(f"{level}%")
+            if not self.level_timer.isActive():
+                # A drag is about to send its own value; a poll that arrives in
+                # the meantime must not snap the slider back to the old state.
+                self.level_slider.setValue(level)
+                self.level_value.setText(f"{level}%")
             self.level_slider.setEnabled(True)
 
             on = bool(st.get("on"))
@@ -1147,8 +1150,8 @@ class MainWindow(QMainWindow):
     # -- controls --------------------------------------------------------
     def set_controls_enabled(self, enabled: bool) -> None:
         self.power_button.setEnabled(enabled)
+        self.level_slider.setEnabled(enabled)
         if not enabled:
-            self.level_slider.setEnabled(False)
             self.temp_slider.setEnabled(False)
         for button in self.swatch_buttons:
             button.setEnabled(enabled)

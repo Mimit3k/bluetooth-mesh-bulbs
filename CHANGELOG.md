@@ -11,6 +11,16 @@ The vendored `btmesh` library has its own changelog at
 
 ### Fixed
 
+- Brightness and colour controls no longer stop working after switching bulbs.
+  Some Bluetooth adapters service only one GATT connection at a time, and the
+  GUI used to keep one proxy connection per bulb.  Picking a second bulb opened
+  a second connection, after which both sessions went silent and every request
+  timed out — which looked like the slider and colour controls breaking after
+  Bulb 2 was re-provisioned.  The worker now keeps a single proxy session and
+  retargets it (`Link.set_target`) instead of opening a link per bulb.  A
+  status poll that lands during a slider drag can no longer snap the slider
+  back and swallow the change, and the brightness slider is re-enabled after a
+  failed request so it can be retried.
 - Colour control now works on both firmware generations. Bulb 1 (firmware
   `33.02.50`) ships with a `1..50` Light Lightness range and scales HSL
   lightness to that range; Bulb 2 (firmware `34.02.09`) ships with `1..100`
