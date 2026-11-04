@@ -11,6 +11,13 @@ The vendored `btmesh` library has its own changelog at
 
 ### Fixed
 
+- Adding a factory-reset bulb no longer fails on the first try. On Windows the
+  unprovisioned-device beacon is sometimes missed for ten seconds right after
+  the previous scan or proxy link was torn down, which produced `Phase0Failure:
+  no 0x1827 unprovisioned-device beacon seen` even though pressing **Add** a
+  second time worked. The scan now runs up to three times, two seconds apart;
+  it happens before any provisioning traffic, so a retry cannot leave a
+  half-provisioned node behind.
 - Windows setup now finds Python on Windows PowerShell 5.1. The version probe
   was a multi-line `-c` argument containing double quotes; PowerShell 5.1 does
   not escape those when handing arguments to a native command, so the probe

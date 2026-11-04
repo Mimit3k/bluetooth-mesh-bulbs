@@ -1128,7 +1128,28 @@ async def provision(state: State, uuid: str | None = None, name: str = "Bulb",
         "device_uuid": uuid.replace("-", "").lower() if uuid else None,
         "static_oob": static_oob,
     })()
-    unicast = await p0.provision(args, state.data, state.path, transport)
+    # Windows BLE stacks can take a few seconds to resume delivering
+    # advertisements right after the previous scan or proxy link was torn down,
+    # and the lamp's pairing window is short.  A single 10 s scan therefore
+    # misses a beacon that is plainly there, which showed up as "no 0x1827
+    # unprovisioned-device beacon seen" that only worked when Add was pressed
+    # again.  The scan runs before any provisioning traffic, so repeating it
+    # cannot leave a half-provisioned node behind.
+    scan_attempts = 3
+    unicast: int | None = None
+    for attempt in range(1, scan_attempts + 1):
+        try:
+            unicast = await p0.provision(args, state.data, state.path, transport)
+            break
+        except p0.Phase0Failure as exc:
+            if exc.phase != "provisioning scan" or attempt == scan_attempts:
+                raise
+            log_fn(
+                f"unprovisioned beacon not seen yet "
+                f"(attempt {attempt}/{scan_attempts}); scanning again"
+            )
+            await asyncio.sleep(2.0)
+    assert unicast is not None
 
     entry = state.data["devices"][f"0x{unicast:04x}"]
     entry["name"] = name

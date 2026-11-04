@@ -1,8 +1,8 @@
-"""Offline checks for the retry after a freshly provisioned node times out.
+"""Offline checks for the retries around provisioning.
 
-No Bluetooth is involved: the provisioning handshake and the GATT link are
-faked, so this exercises only :func:`meshcore.provision`'s retry loop and the
-message it raises when every attempt fails.
+No Bluetooth is involved: the provisioning handshake, the beacon scan and the
+GATT link are faked, so this exercises only :func:`meshcore.provision`'s retry
+loops and the message it raises when every attempt fails.
 """
 
 # ruff: noqa: E402  (the path bootstrap must run before imports)
@@ -109,4 +109,79 @@ with tempfile.TemporaryDirectory(prefix="bulbctl-retry-fail-") as tmp:
     finally:
         state.release()
 
-print("post-provisioning retry tests passed")
+# --- the unprovisioned-beacon scan is retried ------------------------------
+# Windows can miss a beacon that is plainly there right after the previous
+# scan or proxy link was torn down.  The scan happens before any provisioning
+# traffic, so it is safe to run again instead of making the user press Add.
+
+
+async def ok_configure(state, node, unicast, log_fn=print, **kwargs):
+    return [0x1000], object()
+
+
+meshcore.configure_node = ok_configure
+
+scan_calls: list[str | None] = []
+scan_logs: list[str] = []
+
+
+async def flaky_scan(args, data, path, transport) -> int:
+    scan_calls.append(args.device_uuid)
+    if len(scan_calls) < 3:
+        raise meshcore.p0.Phase0Failure(
+            "provisioning scan", "no 0x1827 unprovisioned-device beacon seen", []
+        )
+    data["devices"]["0x0006"] = {
+        "device_key": "22" * 16,
+        "uuid": "cc" * 16,
+        "address": "AA:BB:CC:DD:EE:06",
+    }
+    data["next_unicast"] = 7
+    return 6
+
+
+meshcore.p0.provision = flaky_scan
+with tempfile.TemporaryDirectory(prefix="bulbctl-scan-retry-") as tmp:
+    state = meshcore.State(Path(tmp) / "state.json")
+    try:
+        unicast = asyncio.run(
+            meshcore.provision(state, uuid="cc", name="Again", log_fn=scan_logs.append)
+        )
+        assert unicast == 0x0006, hex(unicast)
+        assert len(scan_calls) == 3, scan_calls
+        assert any("scanning again" in line for line in scan_logs), scan_logs
+        assert state.device(0x0006)["bound_models"] == [0x1000]
+    finally:
+        state.release()
+
+
+# When every scan misses, the original beacon diagnosis is raised after three
+# tries instead of being wrapped as a post-provisioning configuration failure.
+scan_fails: list[int] = []
+
+
+async def no_beacon(args, data, path, transport) -> int:
+    scan_fails.append(1)
+    raise meshcore.p0.Phase0Failure(
+        "provisioning scan", "no 0x1827 unprovisioned-device beacon seen", []
+    )
+
+
+meshcore.p0.provision = no_beacon
+with tempfile.TemporaryDirectory(prefix="bulbctl-scan-fail-") as tmp:
+    state = meshcore.State(Path(tmp) / "state.json")
+    try:
+        try:
+            asyncio.run(
+                meshcore.provision(state, uuid="dd", name="Nope",
+                                   log_fn=lambda _line: None)
+            )
+        except meshcore.p0.Phase0Failure as exc:
+            assert "no 0x1827" in str(exc), exc
+        else:
+            raise AssertionError("expected Phase0Failure after three scans")
+        assert len(scan_fails) == 3, scan_fails
+    finally:
+        state.release()
+
+print("provisioning retry tests passed")
