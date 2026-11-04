@@ -11,28 +11,23 @@ The vendored `btmesh` library has its own changelog at
 
 ### Fixed
 
-- Brightness and colour controls no longer stop working after switching bulbs.
-  Some Bluetooth adapters service only one GATT connection at a time, and the
-  GUI used to keep one proxy connection per bulb.  Picking a second bulb opened
-  a second connection, after which both sessions went silent and every request
-  timed out — which looked like the slider and colour controls breaking after
-  Bulb 2 was re-provisioned.  The worker now keeps a single proxy session and
-  retargets it (`Link.set_target`) instead of opening a link per bulb.  A
-  status poll that lands during a slider drag can no longer snap the slider
-  back and swallow the change, and the brightness slider is re-enabled after a
-  failed request so it can be retried.
-- Colour control now works on both firmware generations. Bulb 1 (firmware
-  `33.02.50`) ships with a `1..50` Light Lightness range and Bulb 2 (firmware
-  `34.02.09`) with `1..100`. Earlier builds widened the range to `1..65535`,
-  which made the brightness slider move while the LED stayed at full
-  brightness. The app now keeps each lamp's factory range and scales Light
-  Lightness, CTL lightness and HSL lightness to it, so white brightness dims
-  correctly on both bulbs. Light HSL lightness behaves like HSL's *L*: near
-  the top of the range the colour washes out to white, so colour brightness is
-  mapped onto the saturated half of the range. Hue is sent in degrees and
-  saturation in percent, which is what the lamps report in their HSL Range
-  status. Brightness is stored as a percentage, so it survives switching
-  between white and colour mode.
+- Windows setup now finds Python on Windows PowerShell 5.1. The version probe
+  was a multi-line `-c` argument containing double quotes; PowerShell 5.1 does
+  not escape those when handing arguments to a native command, so the probe
+  arrived at Python as broken source and *every* interpreter — python.org,
+  Miniconda, uv, Microsoft Store — was rejected with a `Traceback`. The probe
+  is now one line without double quotes, and `$ErrorActionPreference` is relaxed
+  around it so a native command's stderr cannot abort the check. The search also
+  keeps Microsoft Store installs (the `WindowsApps` path is where the Store
+  alias lives) instead of filtering them out, uses the interpreter's real
+  `sys.executable`, consults `where.exe` for extra PATH matches, and reports
+  why each candidate was rejected. A windowed `pythonw*.exe` is never used to
+  build the environment — it is skipped when discovered, mapped to the console
+  `python.exe` beside it, or rejected — and setup now verifies that
+  `.venv\Scripts\python.exe` exists before installing dependencies. Windows
+  creates a windowed interpreter next to every console one, and starting `venv`
+  from it raced the dependency install.
+
 - Config model binds are now addressed to the node's primary unicast address,
   with the element address inside the payload, as the mesh specification
   requires. This also means the Light Lightness Setup Server can be bound on

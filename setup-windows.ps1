@@ -47,6 +47,7 @@ $PSNativeCommandUseErrorActionPreference = $false
 Set-Location -LiteralPath $PSScriptRoot
 
 $script:candidatePaths = @()
+$script:probeNotes = @{}
 
 function Resolve-PythonPath {
     param([string]$Spec)
@@ -74,33 +75,39 @@ function Get-PythonInfo {
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
         return $null
     }
-    # Skip GUI-only interpreters and the Microsoft Store execution alias.
-    if ($Path -match "(?i)pythonw\.exe$") {
-        return $null
-    }
-    if ($Path -match "(?i)\\WindowsApps\\") {
+    # Skip GUI-only interpreters. A Microsoft Store install is kept: when
+    # Store Python is installed its execution alias under WindowsApps is the
+    # only python.exe on PATH, and probing it runs the real interpreter. With
+    # no Store Python the alias is a stub, the probe fails, and the candidate is
+    # reported as unrunnable below.
+    if ($Path -match "(?i)(^|[\\/])pythonw[^\\/]*\.exe$") {
         return $null
     }
 
-    $probe = @'
-import json, platform, sys
-print(json.dumps({
-    "major": sys.version_info[0],
-    "minor": sys.version_info[1],
-    "micro": sys.version_info[2],
-    "bits": 64 if sys.maxsize > 2**32 else 32,
-    "arch": platform.machine(),
-    "executable": sys.executable,
-}))
-'@
+    # One line, and no double quotes: Windows PowerShell 5.1 does not escape
+    # quotes when it passes an argument to a native command, so the previous
+    # multi-line probe arrived as broken source and every interpreter failed
+    # with a SyntaxError before it could report its version.
+    $probe = "import json,platform,sys;print(json.dumps({'major':sys.version_info[0],'minor':sys.version_info[1],'micro':sys.version_info[2],'bits':64 if sys.maxsize>2**32 else 32,'arch':platform.machine(),'executable':sys.executable}))"
 
+    # With ErrorActionPreference=Stop, Windows PowerShell 5.1 turns a native
+    # command's stderr into a terminating error even when it is redirected, so
+    # relax it for the probe and judge the interpreter by its exit code.
+    $previous = $ErrorActionPreference
     try {
+        $ErrorActionPreference = "Continue"
         $raw = (& $Path -c $probe 2>$null | Out-String).Trim()
+        $exitCode = $LASTEXITCODE
     }
     catch {
+        $script:probeNotes[$Path] = $_.Exception.Message
         return $null
     }
-    if ($LASTEXITCODE -ne 0 -or -not $raw) {
+    finally {
+        $ErrorActionPreference = $previous
+    }
+    if ($exitCode -ne 0 -or -not $raw) {
+        $script:probeNotes[$Path] = "probe exited with code $exitCode"
         return $null
     }
 
@@ -108,15 +115,36 @@ print(json.dumps({
         $data = $raw | ConvertFrom-Json
     }
     catch {
+        $script:probeNotes[$Path] = "probe did not return JSON"
         return $null
     }
 
     $major = [int]$data.major
     $minor = [int]$data.minor
     $micro = [int]$data.micro
+    # Prefer the interpreter the probe actually ran. For a Microsoft Store
+    # alias that is the real package python.exe, which can build the venv.
+    $exe = [string]$data.executable
+    if (-not $exe -or -not (Test-Path -LiteralPath $exe -PathType Leaf)) {
+        $exe = $Path
+    }
+    # A windowed interpreter has no console and does not populate the venv
+    # synchronously, so setup would move on before .venv\Scripts\python.exe
+    # exists. Prefer the console python.exe next to it.
+    if ($exe -match "(?i)(^|[\\/])pythonw[^\\/]*\.exe$") {
+        $console = Join-Path (Split-Path -Parent $exe) "python.exe"
+        if (Test-Path -LiteralPath $console -PathType Leaf) {
+            $exe = $console
+        }
+        else {
+            $script:probeNotes[$Path] =
+                "windowed interpreter with no console python.exe next to it"
+            return $null
+        }
+    }
     return [pscustomobject]@{
-        Path       = $Path
-        Executable = [string]$data.executable
+        Path       = $exe
+        Executable = $exe
         Major      = $major
         Minor      = $minor
         Micro      = $micro
@@ -158,6 +186,19 @@ if (Get-Command -Name "py" -ErrorAction SilentlyContinue) {
 # python.exe and any versioned python3.x.exe on PATH.
 Get-Command -Name "python*" -CommandType Application -ErrorAction SilentlyContinue |
     ForEach-Object { Add-PythonCandidate $_.Path }
+
+# where.exe lists every match on PATH, including shims that Get-Command
+# collapses into a single name.
+if (Get-Command -Name "where.exe" -ErrorAction SilentlyContinue) {
+    foreach ($name in @("python.exe", "python3.exe")) {
+        foreach ($line in @(& where.exe $name 2>$null)) {
+            $candidate = "$line".Trim()
+            if ($candidate) {
+                Add-PythonCandidate $candidate
+            }
+        }
+    }
+}
 
 # Standard per-user and system install locations.
 $patterns = @()
@@ -230,7 +271,13 @@ else {
     foreach ($path in $script:candidatePaths) {
         $info = Get-PythonInfo $path
         if ($null -eq $info) {
-            $rejected += "$path (could not run)"
+            $note = $script:probeNotes[$path]
+            if ($note) {
+                $rejected += "$path (could not run: $note)"
+            }
+            else {
+                $rejected += "$path (could not run)"
+            }
             continue
         }
         $label = "$($info.Display) $($info.Bits)-bit ($($info.Arch)) - $path"
@@ -263,6 +310,11 @@ else {
         $details = ""
         if ($rejected.Count -gt 0) {
             $details = "`n`nFound but rejected:`n  " + ($rejected -join "`n  ")
+        }
+        $seen = Get-Command -Name "python" -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+        if ($seen -and $seen.Source) {
+            $details += "`n`nPowerShell resolves 'python' to: $($seen.Source)"
         }
         throw @"
 No suitable 64-bit Python 3.12 or newer was found.$details
@@ -333,6 +385,9 @@ if ($recreateVenv) {
     & $chosen.Executable -m venv $venvDir
     if ($LASTEXITCODE -ne 0) {
         throw "Could not create .venv with $($chosen.Executable)."
+    }
+    if (-not (Test-Path -LiteralPath $venvPython -PathType Leaf)) {
+        throw "Python $($chosen.Display) did not create .venv\Scripts\python.exe. Remove .venv and try again, passing a console interpreter with -Python if it persists."
     }
 }
 else {

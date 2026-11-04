@@ -188,15 +188,16 @@ needs no Python at all is a planned follow-up.
 
 Windows troubleshooting:
 
-- `python` opens the Microsoft Store → install Python from python.org, or
-  disable the Store aliases under **Settings → Apps → Advanced app settings →
-  App execution aliases**.
+- `python` opens the Microsoft Store → no Python is installed and the Store
+  alias is a stub. Install Python from python.org or with uv; if you prefer the
+  Store build, install Python from the Store so the alias runs it (the setup
+  script accepts a Store install when the alias reports Python 3.12+).
 - `No suitable 64-bit Python 3.12 or newer was found` → follow the uv commands
   it prints, install a current 64-bit Python from python.org, or pass `-Python`
   / `-PythonVersion`. The error lists every interpreter it found and why it was
-  rejected. Python versions newer than this README are accepted automatically;
-  PyQt6 has no 32-bit wheels. If the newest release has no PyQt6 wheel yet,
-  use `-PythonVersion 3.13`.
+  rejected. Python versions newer than this README are accepted automatically,
+  including Microsoft Store installs; PyQt6 has no 32-bit wheels. If the newest
+  release has no PyQt6 wheel yet, use `-PythonVersion 3.13`.
 - The app starts but finds no lamp → check **Settings → Bluetooth & devices**,
   make sure the lamp is powered and close, and disconnect any phone or vendor
   app that may be holding it.
